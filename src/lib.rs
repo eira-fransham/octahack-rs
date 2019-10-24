@@ -1,5 +1,3 @@
-#![feature(const_slice_len)]
-
 // TODO: Remove all uses of `Vec`, make `Value` generic
 
 mod component;
