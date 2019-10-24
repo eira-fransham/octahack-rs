@@ -20,13 +20,13 @@ pub enum ValueType {
 //       automagically mixes the channels together? I definitely don't think it's
 //       desirable to force all non-mono sound to be split, requiring the performer to
 //       handle twice the number of wires.
-// IDEA: If we expanded from a single output per step to arbitrary numbers of outputs
-//       per step, we could have the continuous output include a "channel",
-//       `rodio`-style, where mono outputs (including params) can simply average the
-//       whole iterator and stereo outputs can operate on each channel separately.
-//
-//       This even gives us the ability for most components to simply be agnostic over
-//       channel count, since they can just forward the channel number of the input.
+// TODO: We could absolutely support processing more than 1 value per tick, but to do so
+//       without either killing performance or making the API absurdly unwieldy requires
+//       GATs to be implemented. Caching might be a problem too - currently we can easily
+//       cache one value per output, but exactly how that would work if we're producing an
+//       arbitrary number of values is unclear. Certainly we'd have to reintroduce the
+//       only-backwards-wiring restriction. Whether it'd be faster to simply not cache
+//       at all is something to explore there once GATs are available.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Value {
     Binary(bool),
