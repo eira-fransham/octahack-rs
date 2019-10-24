@@ -2,57 +2,9 @@ use crate::{Component, GetInput, GetParam, SpecId, Specifier, Value, ValueType};
 use cpal::Sample as CpalSample;
 use rodio::{Sample, Source};
 
-pub struct Amplifier;
+mod amplifier;
 
-#[derive(Copy, Clone)]
-pub struct AmplifierIO(u8);
-
-const AMPLIFIER_IO_COUNT: usize = 8;
-
-impl Specifier for AmplifierIO {
-    const VALUES: &'static [Self] = &[
-        AmplifierIO(0),
-        AmplifierIO(1),
-        AmplifierIO(2),
-        AmplifierIO(3),
-        AmplifierIO(4),
-        AmplifierIO(5),
-        AmplifierIO(6),
-        AmplifierIO(7),
-    ];
-    const TYPES: &'static [ValueType] = &[ValueType::Continuous; AMPLIFIER_IO_COUNT];
-
-    fn id(&self) -> SpecId {
-        self.0 as _
-    }
-
-    fn from_id(id: SpecId) -> Self {
-        assert!(id < AMPLIFIER_IO_COUNT);
-        AmplifierIO(id as _)
-    }
-}
-
-impl Component for Amplifier {
-    type InputSpecifier = AmplifierIO;
-    type OutputSpecifier = AmplifierIO;
-    type ParamSpecifier = AmplifierIO;
-
-    fn output<Ctx>(&mut self, id: Self::OutputSpecifier, ctx: &mut Ctx) -> Option<Value>
-    where
-        for<'a> &'a mut Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
-    {
-        use az::Cast;
-
-        let to_multiply: f32 = ctx.input(id)?.continuous().unwrap().cast();
-        // TODO: Return `Result<Option<Value>, SomeError>` so we can differentiate between
-        //       "no value" and "an error happened"
-        let multiplication_factor: f32 =
-            fixed::FixedU32::<typenum::consts::U32>::from_num(ctx.param(id).continuous().unwrap())
-                .cast();
-
-        Some(Value::from(to_multiply * multiplication_factor))
-    }
-}
+use amplifier::{Amplifier, AmplifierIO};
 
 crate::component_set! {
     mod octahack_component {
@@ -185,6 +137,24 @@ where
 #[cfg(test)]
 mod test {
     use crate::{ComponentSet, NewWire, Rack, SpecId, Specifier, Value, ValueType};
+    use rodio::Source;
+
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    struct OneChannel;
+
+    impl Specifier for OneChannel {
+        const VALUES: &'static [Self] = &[OneChannel];
+        const TYPES: &'static [ValueType] = &[ValueType::Continuous];
+
+        fn id(&self) -> SpecId {
+            0
+        }
+
+        fn from_id(id: SpecId) -> Self {
+            assert_eq!(id, 0);
+            OneChannel
+        }
+    }
 
     #[test]
     fn correct_max_out_size() {
@@ -196,61 +166,74 @@ mod test {
 
     #[test]
     fn get_rack_output() {
-        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-        enum RackOut {
-            Audio,
-            Midi,
-        }
-
-        impl Specifier for RackOut {
-            const VALUES: &'static [Self] = &[RackOut::Audio, RackOut::Midi];
-            const TYPES: &'static [ValueType] = &[ValueType::Continuous, ValueType::Midi];
-
-            fn id(&self) -> SpecId {
-                match self {
-                    Self::Audio => 0,
-                    Self::Midi => 1,
-                }
-            }
-
-            fn from_id(id: SpecId) -> Self {
-                match id {
-                    0 => Self::Audio,
-                    1 => Self::Midi,
-                    _ => panic!("Invalid id for `RackOut`"),
-                }
-            }
-        }
-
-        let mut rack = Rack::<super::OctahackComponent, RackOut, RackOut>::new();
+        let mut rack = Rack::<super::OctahackComponent, OneChannel, OneChannel>::new();
 
         let amp = rack.new_component(super::Amplifier);
         rack.wire(
-            NewWire::rack_input(RackOut::Audio),
+            NewWire::rack_input(OneChannel),
             NewWire::component_input(amp, super::AmplifierIO(0)),
         );
         rack.wire(
             NewWire::component_output(amp, super::AmplifierIO(0)),
-            NewWire::rack_output(RackOut::Audio),
+            NewWire::rack_output(OneChannel),
         );
 
         let context = |i| {
             Some(match i {
-                RackOut::Audio => Value::Continuous(crate::Continuous::max_value()),
-                RackOut::Midi => Value::Midi,
+                OneChannel => Value::Continuous(crate::Continuous::max_value()),
             })
         };
 
         rack.update(&context);
         assert_eq!(
-            rack.output(RackOut::Audio, &context),
-            Some(Value::Continuous(crate::Continuous::default()))
+            rack.output(OneChannel, &context),
+            Some(Value::Continuous(crate::Continuous::max_value()))
         );
     }
 
     #[test]
-    fn stream_audio() {
-        use rodio::Source;
+    fn self_wiring() {
+        use std::iter;
+
+        let mut rack = Rack::<super::OctahackComponent, OneChannel, OneChannel>::new();
+
+        let amp = rack.new_component(super::Amplifier);
+        rack.wire(
+            NewWire::rack_input(OneChannel),
+            NewWire::component_input(amp, super::AmplifierIO(0)),
+        );
+        rack.set_param(amp, super::AmplifierIO(0), 0.5);
+        for i in 0..7 {
+            rack.wire(
+                NewWire::component_output(amp, super::AmplifierIO(i)),
+                NewWire::component_input(amp, super::AmplifierIO(i + 1)),
+            );
+            rack.set_param(amp, super::AmplifierIO(i + 1), 0.5);
+        }
+
+        rack.wire(
+            NewWire::component_output(amp, super::AmplifierIO(7)),
+            NewWire::rack_output(OneChannel),
+        );
+
+        let streamer = crate::output::AudioStreamer::new_convert(
+            None,
+            rack,
+            rodio::source::SineWave::new(440),
+        );
+
+        assert_eq!(
+            iter::repeat(32767)
+                .take(50)
+                .chain(iter::repeat(-32768).take(50))
+                .collect::<Vec<_>>(),
+            streamer.skip(1).take(100).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn circular_wiring() {
+        use std::iter;
 
         #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
         struct OneChannel;
@@ -278,21 +261,19 @@ mod test {
         );
         rack.wire(
             NewWire::component_output(amp, super::AmplifierIO(0)),
-            NewWire::rack_output(OneChannel),
+            NewWire::component_input(amp, super::AmplifierIO(0)),
         );
-        rack.set_param(amp, super::AmplifierIO(0), 0.01);
+        rack.set_param(amp, super::AmplifierIO(0), 0.5);
 
-        let mut streamer = crate::output::AudioStreamer::new_convert(
+        let streamer = crate::output::AudioStreamer::new_convert(
             None,
             rack,
             rodio::source::SineWave::new(440),
         );
 
-        rodio::play_raw(
-            &rodio::default_output_device().unwrap(),
-            streamer.convert_samples(),
+        assert_eq!(
+            iter::repeat(0).take(100).collect::<Vec<_>>(),
+            streamer.take(100).collect::<Vec<_>>()
         );
-
-        loop {}
     }
 }

@@ -1,4 +1,5 @@
-use std::marker::PhantomData;
+use nom_midi::MidiEventType;
+use std::{cell::Cell, marker::PhantomData};
 use typenum::consts;
 
 pub type Continuous = fixed::FixedI32<consts::U32>;
@@ -6,41 +7,53 @@ pub type Continuous16 = fixed::FixedI16<consts::U16>;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ValueType {
-    Gate,
+    Binary,
     Continuous,
-    // TODO
+    // The inner U8 is the maximum
+    Discrete(u8),
     Midi,
 }
 
 // Used for both parameters and I/O, since we want to allow wiring outputs to params
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Value {
-    Gate(bool),
+    Binary(bool),
     Continuous(Continuous),
-    // TODO
-    Midi,
+    Discrete(u8),
+    Midi(MidiEventType),
 }
 
 impl Value {
-    pub fn default_for(ty: ValueType) -> Self {
-        match ty {
-            ValueType::Gate => Self::Gate(false),
-            ValueType::Continuous => Self::Continuous(Continuous::default()),
-            ValueType::Midi => Self::Midi,
+    pub fn continuous(self) -> Option<Continuous> {
+        match self {
+            Value::Continuous(val) => Some(val),
+            _ => None,
         }
     }
 
-    pub fn continuous(self) -> Option<Continuous> {
+    pub fn discrete(self) -> Option<u8> {
         match self {
-            Value::Continuous(i) => Some(i),
+            Value::Discrete(val) => Some(val),
+            _ => None,
+        }
+    }
+
+    pub fn midi(self) -> Option<MidiEventType> {
+        match self {
+            Value::Midi(val) => Some(val),
             _ => None,
         }
     }
 }
 
+impl From<Continuous> for Value {
+    fn from(other: Continuous) -> Self {
+        Value::Continuous(other)
+    }
+}
+
 impl From<f32> for Value {
     fn from(other: f32) -> Self {
-        // HACK: What to do about overflowing values?
         Value::Continuous(Continuous::saturating_from_num(other))
     }
 }
@@ -64,18 +77,22 @@ pub trait Specifier: Sized + Clone + 'static {
     }
 }
 
+pub trait Param: Specifier {
+    fn default(&self) -> Value;
+}
+
 pub trait Component {
     type InputSpecifier: Specifier;
     type OutputSpecifier: Specifier;
     type ParamSpecifier: Specifier;
 
-    fn output<Ctx>(&mut self, id: Self::OutputSpecifier, ctx: &mut Ctx) -> Option<Value>
+    fn output<Ctx>(&self, id: Self::OutputSpecifier, ctx: &mut Ctx) -> Option<Value>
     where
         for<'a> &'a mut Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
 
     fn update<Ctx>(&mut self, _ctx: &mut Ctx)
     where
-        for<'a> &'a mut Ctx: GetInput<Self::InputSpecifier>,
+        for<'a> &'a mut Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
     {
     }
 }
@@ -133,6 +150,39 @@ macro_rules! component_set {
                 }
             )*
 
+            enum ParamDefaultsInner {
+                $($t(&'static [<super::$t as $crate::Component>::ParamSpecifier])),*
+            }
+
+            #[doc(hidden)]
+            pub struct ParamDefaults {
+                inner: ParamDefaultsInner,
+            }
+
+            impl Iterator for ParamDefaults
+            where
+            $(
+                <super::$t as $crate::Component>::ParamSpecifier: $crate::Param
+            )*
+            {
+                type Item = $crate::Value;
+
+                fn next(&mut self) -> Option<Self::Item> {
+                    match &mut self.inner {
+                        $(
+                            ParamDefaultsInner::$t(inner) => {
+                                let (first, rest) = inner.split_first()?;
+
+                                *inner = rest;
+
+                                Some($crate::Param::default(first))
+                            },
+                        )*
+                    }
+
+                }
+            }
+
             impl $crate::ComponentSet for Component {
                 const MAX_OUTPUT_COUNT: usize = {
                     let mut out = 0;
@@ -155,6 +205,8 @@ macro_rules! component_set {
                     out
                 };
 
+                type ParamDefaults = ParamDefaults;
+
                 fn types(&self) -> $crate::Types {
                     match self {
                         $(
@@ -169,7 +221,24 @@ macro_rules! component_set {
                     }
                 }
 
-                fn output<Ctx>(&mut self, id: $crate::AnyOutputSpec, ctx: &mut Ctx) -> Option<$crate::Value>
+                fn param_defaults(&self) -> Self::ParamDefaults {
+                    match self {
+                        $(
+                            Self::$t(_) => {
+                                ParamDefaults {
+                                    inner: ParamDefaultsInner::$t(
+                                        <
+                                            <super::$t as $crate::Component>::OutputSpecifier as
+                                                $crate::Specifier
+                                        >::VALUES
+                                    )
+                                }
+                            },
+                        )*
+                    }
+                }
+
+                fn output<Ctx>(&self, id: $crate::AnyOutputSpec, ctx: &mut Ctx) -> Option<$crate::Value>
                 where
                     for<'a> &'a mut Ctx: $crate::GetInput<$crate::AnyInputSpec> + $crate::GetParam<$crate::AnyParamSpec>
                 {
@@ -233,9 +302,13 @@ pub struct Types {
 pub trait ComponentSet {
     const MAX_OUTPUT_COUNT: usize;
 
+    type ParamDefaults: Iterator<Item = Value>;
+
     fn types(&self) -> Types;
 
-    fn output<Ctx>(&mut self, id: AnyOutputSpec, ctx: &mut Ctx) -> Option<Value>
+    fn param_defaults(&self) -> Self::ParamDefaults;
+
+    fn output<Ctx>(&self, id: AnyOutputSpec, ctx: &mut Ctx) -> Option<Value>
     where
         for<'a> &'a mut Ctx: GetInput<AnyInputSpec> + GetParam<AnyParamSpec>;
 
@@ -446,6 +519,7 @@ impl<Id> GenericWire<Output, Id> {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ComponentId(usize);
 
+#[derive(Debug, Clone, PartialEq)]
 struct TaggedComponent<C> {
     id: ComponentId,
     inner: C,
@@ -453,6 +527,7 @@ struct TaggedComponent<C> {
     wires: Vec<Option<Wire<Output>>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RackComponent<C> {
     Component(C),
     Group {
@@ -461,6 +536,7 @@ pub enum RackComponent<C> {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
 struct ComponentIdGen {
     cur: usize,
 }
@@ -477,10 +553,11 @@ impl ComponentIdGen {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Rack<C, InputSpec, OutputSpec> {
     ids: ComponentIdGen,
-    last_saved_outputs: Vec<Vec<Option<Value>>>,
-    cur_saved_outputs: Vec<Vec<Option<Value>>>,
+    previous_outputs: Vec<Vec<Cell<SavedValue>>>,
+    current_outputs: Vec<Vec<Cell<SavedValue>>>,
     components: Vec<TaggedComponent<C>>,
     out_wires: Vec<Option<Wire<Output>>>,
     _marker: PhantomData<(InputSpec, OutputSpec)>,
@@ -497,8 +574,8 @@ where
 
         Rack {
             ids: ComponentIdGen::new(),
-            last_saved_outputs: vec![],
-            cur_saved_outputs: vec![],
+            previous_outputs: vec![],
+            current_outputs: vec![],
             components: vec![],
             out_wires: iter::repeat(None).take(OutputSpec::TYPES.len()).collect(),
             _marker: PhantomData,
@@ -510,7 +587,7 @@ where
         for<'a> &'a Ctx: GetInput<InputSpec>,
     {
         self.as_slice().update(ctx);
-        std::mem::swap(&mut self.last_saved_outputs, &mut self.cur_saved_outputs);
+        std::mem::swap(&mut self.previous_outputs, &mut self.current_outputs);
     }
 
     // TODO: Return a result
@@ -536,18 +613,14 @@ where
     pub fn new_component(&mut self, component: impl Into<C>) -> usize {
         let component = component.into();
         let out = self.components.len();
-        let types = component.types();
-        let num_inputs = types.input.len();
+        let params = component.param_defaults();
+        let num_inputs = component.types().input.len();
 
         self.components.push(TaggedComponent {
             id: self.ids.next(),
             inner: component,
             wires: vec![None; num_inputs],
-            params: types
-                .parameters
-                .iter()
-                .map(|ty| Value::default_for(*ty))
-                .collect(),
+            params: params.collect(),
         });
 
         out
@@ -563,13 +636,13 @@ where
 
         let wire = self.out_wires[spec.id()]?;
 
-        for o in &mut self.cur_saved_outputs {
+        for o in &mut self.current_outputs {
             o.clear();
         }
 
-        if self.cur_saved_outputs.len() < self.components.len() {
-            self.cur_saved_outputs.extend(
-                iter::repeat(vec![]).take(self.components.len() - self.cur_saved_outputs.len()),
+        if self.current_outputs.len() < self.components.len() {
+            self.current_outputs.extend(
+                iter::repeat(vec![]).take(self.components.len() - self.current_outputs.len()),
             );
         }
 
@@ -579,17 +652,35 @@ where
 
     fn as_slice(&mut self) -> RackSlice<'_, C, InputSpec> {
         RackSlice {
-            previous_outputs: &self.last_saved_outputs,
-            current_outputs: &mut self.cur_saved_outputs,
+            previous_outputs: &self.previous_outputs,
+            current_outputs: &mut self.current_outputs,
+            current_component: None,
             components: &mut self.components,
             _marker: PhantomData::<InputSpec>,
         }
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum SavedValue {
+    Calculating,
+    NotCalculated,
+    Calculated(Option<Value>),
+}
+
+impl SavedValue {
+    fn to_option(self) -> Option<Value> {
+        match self {
+            Self::NotCalculated | Self::Calculating => None,
+            Self::Calculated(val) => val,
+        }
+    }
+}
+
 struct RackSlice<'a, C, InputSpec> {
-    previous_outputs: &'a [Vec<Option<Value>>],
-    current_outputs: &'a mut [Vec<Option<Value>>],
+    previous_outputs: &'a [Vec<Cell<SavedValue>>],
+    current_outputs: &'a mut [Vec<Cell<SavedValue>>],
+    current_component: Option<(&'a TaggedComponent<C>, &'a [Cell<SavedValue>])>,
     components: &'a mut [TaggedComponent<C>],
     _marker: PhantomData<InputSpec>,
 }
@@ -611,7 +702,7 @@ where
             let wires = &this.wires;
             let params = &this.params;
 
-            let previous_outputs = &*self.previous_outputs;
+            let previous_outputs = self.previous_outputs;
             let current_outputs = &mut *self.current_outputs;
 
             inner.update(&mut QuickContext::new(
@@ -622,6 +713,7 @@ where
                     RackSlice {
                         previous_outputs,
                         current_outputs,
+                        current_component: None,
                         components: rest,
                         _marker: PhantomData,
                     }
@@ -640,60 +732,85 @@ where
 
         match wire.element() {
             ElementSpecifier::Component { id, index } => {
-                if let Some(cached) = self
+                match self
                     .current_outputs
                     .get(index)
                     .and_then(|out| out.get(wire.output_id().0))
+                    .map(|cell| cell.get())
                 {
-                    return *cached;
+                    Some(SavedValue::Calculating) => return None,
+                    Some(SavedValue::Calculated(val)) => return val,
+                    None | Some(SavedValue::NotCalculated) => {}
                 }
 
-                if index < self.components.len() {
+                let saved_out = self
+                    .previous_outputs
+                    .get(index)
+                    .and_then(|outs| outs.get(wire.output_id().0))
+                    .and_then(|out| out.get().to_option());
+
+                // This complicated if-else chain is to support components being wired to themselves
+                let (rest, this, rest_outputs, this_output) = if index < self.components.len() {
                     let (rest, this) = self.components.split_at_mut(index);
                     let (rest_outputs, this_output) = self.current_outputs.split_at_mut(index);
-                    let this = &mut this[0];
-
-                    if this.id != id {
-                        // TODO: Disconnect this wire too?
-                        return None;
-                    }
 
                     let this_output = &mut this_output[0];
-                    let previous_outputs = self.previous_outputs;
 
                     if this_output.len() <= wire.output_id().0 {
                         this_output.extend(
-                            iter::repeat(None).take(wire.output_id().0 + 1 - this_output.len()),
+                            iter::repeat(Cell::new(SavedValue::NotCalculated))
+                                .take(wire.output_id().0 + 1 - this_output.len()),
                         );
                     }
 
-                    let inner = &mut this.inner;
-                    let wires = &this.wires;
-                    let params = &this.params;
+                    let this_output: &[_] = &*this_output;
 
-                    let out = inner.output(
-                        AnyOutputSpec(wire.output_id().0),
-                        &mut QuickContext::new(
-                            ctx,
-                            |ctx: &Ctx, spec: AnyInputSpec| {
-                                let wire = wires[spec.0]?;
-
-                                RackSlice {
-                                    previous_outputs,
-                                    current_outputs: rest_outputs,
-                                    components: rest,
-                                    _marker: PhantomData,
-                                }
-                                .output(wire, ctx)
-                            },
-                            |_: &Ctx, spec: AnyParamSpec| params[spec.0],
-                        ),
-                    );
-                    this_output[wire.output_id().0] = out;
-                    out
+                    (rest, &this[0], rest_outputs, this_output)
+                } else if index == self.components.len() {
+                    if let Some((comp, out)) = self.current_component {
+                        (&mut *self.components, comp, &mut *self.current_outputs, out)
+                    } else {
+                        return saved_out;
+                    }
                 } else {
-                    self.previous_outputs[index][wire.output_id().0]
+                    return saved_out;
+                };
+
+                if this.id != id {
+                    // TODO: Disconnect this wire too?
+                    return None;
                 }
+
+                let previous_outputs = self.previous_outputs;
+
+                let inner = &this.inner;
+                let wires = &this.wires;
+                let params = &this.params;
+
+                this_output[wire.output_id().0].set(SavedValue::Calculating);
+
+                let out = inner.output(
+                    AnyOutputSpec(wire.output_id().0),
+                    &mut QuickContext::new(
+                        ctx,
+                        |ctx: &Ctx, spec: AnyInputSpec| {
+                            let wire = wires[spec.0]?;
+
+                            RackSlice {
+                                previous_outputs,
+                                current_outputs: rest_outputs,
+                                current_component: Some((this, this_output)),
+                                components: rest,
+                                _marker: PhantomData,
+                            }
+                            .output(wire, ctx)
+                        },
+                        |_: &Ctx, spec: AnyParamSpec| params[spec.0],
+                    ),
+                );
+
+                this_output[wire.output_id().0].set(SavedValue::Calculated(out));
+                out
             }
             ElementSpecifier::Rack => ctx.input(InputSpec::from_id(wire.io_index)),
         }
