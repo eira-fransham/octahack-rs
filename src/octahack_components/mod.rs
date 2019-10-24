@@ -227,7 +227,7 @@ mod test {
                 .take(50)
                 .chain(iter::repeat(-32768).take(50))
                 .collect::<Vec<_>>(),
-            streamer.skip(1).take(100).collect::<Vec<_>>()
+            streamer.take(100).collect::<Vec<_>>()
         );
     }
 

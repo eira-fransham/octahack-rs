@@ -15,6 +15,18 @@ pub enum ValueType {
 }
 
 // Used for both parameters and I/O, since we want to allow wiring outputs to params
+// TODO: Do we support stereo or arbitrary-channel-number sound as a single `Continuous`
+//       value type, where wiring it to a mono input (or a mono parameter) just
+//       automagically mixes the channels together? I definitely don't think it's
+//       desirable to force all non-mono sound to be split, requiring the performer to
+//       handle twice the number of wires.
+// IDEA: If we expanded from a single output per step to arbitrary numbers of outputs
+//       per step, we could have the continuous output include a "channel",
+//       `rodio`-style, where mono outputs (including params) can simply average the
+//       whole iterator and stereo outputs can operate on each channel separately.
+//
+//       This even gives us the ability for most components to simply be agnostic over
+//       channel count, since they can just forward the channel number of the input.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Value {
     Binary(bool),
@@ -586,8 +598,21 @@ where
     where
         for<'a> &'a Ctx: GetInput<InputSpec>,
     {
+        use std::{iter, mem};
+
+        mem::swap(&mut self.previous_outputs, &mut self.current_outputs);
+
+        for o in &mut self.current_outputs {
+            o.clear();
+        }
+
+        if self.current_outputs.len() < self.components.len() {
+            self.current_outputs.extend(
+                iter::repeat(vec![]).take(self.components.len() - self.current_outputs.len()),
+            );
+        }
+
         self.as_slice().update(ctx);
-        std::mem::swap(&mut self.previous_outputs, &mut self.current_outputs);
     }
 
     // TODO: Return a result
@@ -632,19 +657,7 @@ where
     where
         for<'a> &'a Ctx: GetInput<InputSpec>,
     {
-        use std::iter;
-
         let wire = self.out_wires[spec.id()]?;
-
-        for o in &mut self.current_outputs {
-            o.clear();
-        }
-
-        if self.current_outputs.len() < self.components.len() {
-            self.current_outputs.extend(
-                iter::repeat(vec![]).take(self.components.len() - self.current_outputs.len()),
-            );
-        }
 
         let out = self.as_slice().output(wire, ctx);
         out
@@ -738,6 +751,9 @@ where
                     .and_then(|out| out.get(wire.output_id().0))
                     .map(|cell| cell.get())
                 {
+                    // TODO: Do we reserve `None` for "not wired" so that we can change
+                    //       behaviour based on whether or not an input is wired, semi-
+                    //       modular synth-style?
                     Some(SavedValue::Calculating) => return None,
                     Some(SavedValue::Calculated(val)) => return val,
                     None | Some(SavedValue::NotCalculated) => {}

@@ -99,6 +99,33 @@ where
     type Item = i16;
 
     fn next(&mut self) -> Option<Self::Item> {
+        macro_rules! context {
+            ($sources:expr) => {
+                &|input: InputSpec| {
+                    $sources[input.id()].map(|val| {
+                        Value::Continuous(Continuous::from_num(Continuous16::from_bits(val)))
+                    })
+                }
+            };
+        }
+
+        if self.output_id == 0 {
+            // `debug` because we should assert this in `fn new`
+            debug_assert_eq!(self.audio_inputs.sample_rate(), self.sample_rate());
+            debug_assert_eq!(
+                self.audio_inputs.channels(),
+                num_audio_channels::<OutputSpec>()
+            );
+            for val in &mut self.cur_samples {
+                *val = self.audio_inputs.next();
+            }
+
+            let sources = &self.cur_samples;
+            let ctx = context!(sources);
+
+            self.rack.update(ctx);
+        }
+
         let new_id = {
             let mut id = self.output_id;
             loop {
@@ -115,16 +142,6 @@ where
             }
         };
 
-        macro_rules! context {
-            ($sources:expr) => {
-                &|input: InputSpec| {
-                    $sources[input.id()].map(|val| {
-                        Value::Continuous(Continuous::from_num(Continuous16::from_bits(val)))
-                    })
-                }
-            };
-        }
-
         if let Some(new_id) = new_id {
             let sources = &self.cur_samples;
             let ctx = context!(sources);
@@ -138,21 +155,6 @@ where
 
             Some(Continuous16::from_num(out).to_bits())
         } else {
-            // `debug` because we should assert this in `fn new`
-            debug_assert_eq!(self.audio_inputs.sample_rate(), self.sample_rate());
-            debug_assert_eq!(
-                self.audio_inputs.channels(),
-                num_audio_channels::<OutputSpec>()
-            );
-            for val in &mut self.cur_samples {
-                *val = self.audio_inputs.next();
-            }
-
-            let sources = &self.cur_samples;
-            let ctx = context!(sources);
-
-            self.rack.update(ctx);
-
             self.output_id = 0;
             self.next()
         }
