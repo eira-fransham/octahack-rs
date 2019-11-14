@@ -1,72 +1,69 @@
+use fixed::types::{I0F32, U0F32};
+use itertools::Either;
 use nom_midi::MidiEventType;
-use std::{cell::Cell, marker::PhantomData};
+use std::{iter::ExactSizeIterator, marker::PhantomData};
 use typenum::consts;
 
-pub type Continuous = fixed::FixedI32<consts::U32>;
-pub type Continuous16 = fixed::FixedI16<consts::U16>;
+fn u_to_s(unsigned: U0F32) -> I0F32 {
+    I0F32::from_bits(
+        unsigned
+            .to_bits()
+            .wrapping_sub(I0F32::max_value().to_bits() as u32) as _,
+    )
+}
+
+fn s_to_u(signed: I0F32) -> fixed::FixedU32<consts::U32> {
+    fixed::FixedU32::<consts::U32>::from_bits(
+        (signed.to_bits() as u32).wrapping_add(I0F32::max_value().to_bits() as u32) as _,
+    )
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum ValueType {
+pub enum ValueKind {
     Binary,
     Continuous,
     // The inner U8 is the maximum
     Discrete(u8),
-    Midi,
 }
 
-// Used for both parameters and I/O, since we want to allow wiring outputs to params
-// TODO: Do we support stereo or arbitrary-channel-number sound as a single `Continuous`
-//       value type, where wiring it to a mono input (or a mono parameter) just
-//       automagically mixes the channels together? I definitely don't think it's
-//       desirable to force all non-mono sound to be split, requiring the performer to
-//       handle twice the number of wires.
-// TODO: We could absolutely support processing more than 1 value per tick, but to do so
-//       without either killing performance or making the API absurdly unwieldy requires
-//       GATs to be implemented. Caching might be a problem too - currently we can easily
-//       cache one value per output, but exactly how that would work if we're producing an
-//       arbitrary number of values is unclear. Certainly we'd have to reintroduce the
-//       only-backwards-wiring restriction. Whether it'd be faster to simply not cache
-//       at all is something to explore there once GATs are available.
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum Value {
-    Binary(bool),
-    Continuous(Continuous),
-    Discrete(u8),
-    Midi(MidiEventType),
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct ValueType {
+    pub kind: ValueKind,
+    pub channels: Option<u8>,
 }
 
-impl Value {
-    pub fn continuous(self) -> Option<Continuous> {
-        match self {
-            Value::Continuous(val) => Some(val),
-            _ => None,
+impl ValueType {
+    pub const fn continuous() -> Self {
+        ValueType {
+            kind: ValueKind::Continuous,
+            channels: None,
         }
     }
 
-    pub fn discrete(self) -> Option<u8> {
-        match self {
-            Value::Discrete(val) => Some(val),
-            _ => None,
+    pub const fn mono() -> Self {
+        ValueType {
+            kind: ValueKind::Continuous,
+            channels: Some(1),
         }
     }
 
-    pub fn midi(self) -> Option<MidiEventType> {
-        match self {
-            Value::Midi(val) => Some(val),
-            _ => None,
+    pub const fn stereo() -> Self {
+        ValueType {
+            kind: ValueKind::Continuous,
+            channels: Some(2),
         }
     }
 }
 
-impl From<Continuous> for Value {
-    fn from(other: Continuous) -> Self {
-        Value::Continuous(other)
-    }
+pub type Value = I0F32;
+
+pub trait ValueExt {
+    fn discrete(self, max: u8) -> u8;
 }
 
-impl From<f32> for Value {
-    fn from(other: f32) -> Self {
-        Value::Continuous(Continuous::saturating_from_num(other))
+impl ValueExt for I0F32 {
+    fn discrete(self, max: u8) -> u8 {
+        (f64::from(self) * max as f64) as u8
     }
 }
 
@@ -89,6 +86,15 @@ pub trait Specifier: Sized + Clone + 'static {
     }
 }
 
+impl Specifier for ! {
+    const VALUES: &'static [Self] = &[];
+    const TYPES: &'static [ValueType] = &[];
+
+    fn id(&self) -> SpecId {
+        unreachable!()
+    }
+}
+
 pub trait Param: Specifier {
     fn default(&self) -> Value;
 }
@@ -97,24 +103,39 @@ pub trait Component {
     type InputSpecifier: Specifier;
     type OutputSpecifier: Specifier;
     type ParamSpecifier: Specifier;
+}
 
-    fn output<Ctx>(&self, id: Self::OutputSpecifier, ctx: &mut Ctx) -> Option<Value>
-    where
-        for<'a> &'a mut Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
+// TODO: Support MIDI inputs
 
-    fn update<Ctx>(&mut self, _ctx: &mut Ctx)
+pub trait GetOutput<Val>: Component {
+    // TODO: Use GATs to allow adapators to be used internally.
+    type OutputIter: ExactSizeIterator<Item = Val> + Send;
+
+    fn output<Ctx>(&self, id: Self::OutputSpecifier, ctx: Ctx) -> Self::OutputIter
     where
-        for<'a> &'a mut Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
+        Ctx: GetInput<Self::InputSpecifier, Value> + GetParam<Self::ParamSpecifier>;
+
+    fn update<Ctx>(&mut self, _ctx: Ctx)
+    where
+        Ctx: GetInput<Self::InputSpecifier, Value> + GetParam<Self::ParamSpecifier>,
     {
     }
 }
 
-pub trait GetInput<Spec> {
-    fn input(self, spec: Spec) -> Option<Value>;
+pub trait Context<ISpec, PSpec, Val>: GetInput<ISpec, Val> + GetParam<PSpec> {
+    /// Samples per second
+    fn samples(&self) -> usize;
+}
+
+pub trait GetInput<Spec, Val> {
+    type Iter: ExactSizeIterator<Item = Val> + Send;
+
+    // `None` means that this input is not wired
+    fn input(&self, spec: Spec) -> Option<Self::Iter>;
 }
 
 pub trait GetParam<Spec> {
-    fn param(self, spec: Spec) -> Value;
+    fn param(&self, spec: Spec) -> Value;
 }
 
 #[macro_export]
@@ -122,6 +143,8 @@ macro_rules! component_set {
     ($v:vis mod $name:ident { $($t:ident),* }) => {
         #[allow(dead_code)]
         $v mod $name {
+            use $crate::GetOutput;
+
             pub enum Component {
                 $($t(super::$t)),*
             }
@@ -136,6 +159,40 @@ macro_rules! component_set {
                 $($t(<super::$t as $crate::Component>::ParamSpecifier)),*
             }
 
+            pub enum Iter<$($t),*> {
+                $( $t($t) ),*
+            }
+
+            impl<$($t),*> Iterator for Iter<$($t),*>
+            where $($t: ExactSizeIterator<Item = $crate::Value>),*
+            {
+                type Item = $crate::Value;
+
+                fn next(&mut self) -> Option<Self::Item> {
+                    match self {
+                        $(
+                            Self::$t(inner) => Iterator::next(inner),
+                        )*
+                    }
+                }
+
+                fn size_hint(&self) -> (usize, Option<usize>) {
+                    (self.len(), Some(self.len()))
+                }
+            }
+
+            impl<$($t),*> std::iter::ExactSizeIterator for Iter<$($t),*>
+            where $($t: std::iter::ExactSizeIterator<Item = $crate::Value>),*
+            {
+                fn len(&self) -> usize {
+                    match self {
+                        $(
+                            Self::$t(inner) => std::iter::ExactSizeIterator::len(inner),
+                        )*
+                    }
+                }
+            }
+
             $(
                 impl From<super::$t> for Component {
                     fn from(other: super::$t) -> Self {
@@ -143,18 +200,21 @@ macro_rules! component_set {
                     }
                 }
 
+                #[allow(unreachable_code)]
                 impl From<<super::$t as $crate::Component>::InputSpecifier> for Input {
                     fn from(other: <super::$t as $crate::Component>::InputSpecifier) -> Self {
                         Self::$t(other)
                     }
                 }
 
+                #[allow(unreachable_code)]
                 impl From<<super::$t as $crate::Component>::OutputSpecifier> for Output {
                     fn from(other: <super::$t as $crate::Component>::OutputSpecifier) -> Self {
                         Self::$t(other)
                     }
                 }
 
+                #[allow(unreachable_code)]
                 impl From<<super::$t as $crate::Component>::ParamSpecifier> for Param {
                     fn from(other: <super::$t as $crate::Component>::ParamSpecifier) -> Self {
                         Self::$t(other)
@@ -166,7 +226,6 @@ macro_rules! component_set {
                 $($t(&'static [<super::$t as $crate::Component>::ParamSpecifier])),*
             }
 
-            #[doc(hidden)]
             pub struct ParamDefaults {
                 inner: ParamDefaultsInner,
             }
@@ -175,7 +234,7 @@ macro_rules! component_set {
             where
             $(
                 <super::$t as $crate::Component>::ParamSpecifier: $crate::Param
-            )*
+            ),*
             {
                 type Item = $crate::Value;
 
@@ -191,7 +250,18 @@ macro_rules! component_set {
                             },
                         )*
                     }
+                }
+            }
 
+            impl ExactSizeIterator for ParamDefaults {
+                fn len(&self) -> usize {
+                    match &self.inner {
+                        $(
+                            ParamDefaultsInner::$t(inner) => {
+                                inner.len()
+                            },
+                        )*
+                    }
                 }
             }
 
@@ -250,48 +320,57 @@ macro_rules! component_set {
                     }
                 }
 
-                fn output<Ctx>(&self, id: $crate::AnyOutputSpec, ctx: &mut Ctx) -> Option<$crate::Value>
+                #[allow(unreachable_code)]
+                fn update<Ctx>(&mut self, ctx: Ctx)
                 where
-                    for<'a> &'a mut Ctx: $crate::GetInput<$crate::AnyInputSpec> + $crate::GetParam<$crate::AnyParamSpec>
+                    Ctx: $crate::GetInput<$crate::AnyInputSpec, $crate::component::Value> + $crate::GetParam<$crate::AnyParamSpec>
                 {
                     match self {
                         $(
                             Self::$t(val) => {
-                                use $crate::{Component, GetInput, GetParam, Specifier};
+                                use $crate::{Component, Specifier};
 
-                                val.output(
-                                    <<super::$t as $crate::Component>::OutputSpecifier as $crate::Specifier>::from_id(id.0),
-                                    &mut $crate::component::QuickContext::new(
+                                val.update(
+                                    $crate::component::QuickContext::new(
                                         ctx,
-                                        |ctx: &mut Ctx, spec: <super::$t as $crate::Component>::InputSpecifier| {
+                                        |ctx: &Ctx, spec: <super::$t as $crate::Component>::InputSpecifier| {
                                             ctx.input($crate::AnyInputSpec(spec.id()))
                                         },
-                                        |ctx: &mut Ctx, spec: <super::$t as $crate::Component>::ParamSpecifier| ctx.param($crate::AnyParamSpec(spec.id())),
+                                        |ctx: &Ctx, spec: <super::$t as $crate::Component>::ParamSpecifier| ctx.param($crate::AnyParamSpec(spec.id())),
                                     )
                                 )
                             },
                         )*
                     }
                 }
+            }
 
-                fn update<Ctx>(&mut self, ctx: &mut Ctx)
+            impl $crate::ComponentSetOut<$crate::component::Value> for Component
+            where
+                $( super::$t: $crate::GetOutput<$crate::component::Value> ),*
+            {
+                type OutputIter = Iter<$(<super::$t as $crate::GetOutput<$crate::component::Value>>::OutputIter),*>;
+
+                #[allow(unreachable_code)]
+                fn output<Ctx>(&self, id: $crate::AnyOutputSpec, ctx: Ctx) -> Self::OutputIter
                 where
-                    for<'a> &'a mut Ctx: $crate::GetInput<$crate::AnyInputSpec> + $crate::GetParam<$crate::AnyParamSpec>
+                    Ctx: $crate::GetInput<$crate::AnyInputSpec, $crate::component::Value> + $crate::GetParam<$crate::AnyParamSpec>
                 {
                     match self {
                         $(
                             Self::$t(val) => {
-                                use $crate::{Component, GetInput, GetParam, Specifier};
+                                use $crate::{Component, Specifier};
 
-                                val.update(
-                                    &mut $crate::component::QuickContext::new(
+                                Iter::$t(val.output(
+                                    <<super::$t as $crate::Component>::OutputSpecifier as $crate::Specifier>::from_id(id.0),
+                                    $crate::component::QuickContext::new(
                                         ctx,
-                                        |ctx: &mut Ctx, spec: <super::$t as $crate::Component>::InputSpecifier| {
+                                        |ctx: &Ctx, spec: <super::$t as $crate::Component>::InputSpecifier| {
                                             ctx.input($crate::AnyInputSpec(spec.id()))
                                         },
-                                        |ctx: &mut Ctx, spec: <super::$t as $crate::Component>::ParamSpecifier| ctx.param($crate::AnyParamSpec(spec.id())),
+                                        |ctx: &Ctx, spec: <super::$t as $crate::Component>::ParamSpecifier| ctx.param($crate::AnyParamSpec(spec.id())),
                                     )
-                                )
+                                ))
                             },
                         )*
                     }
@@ -314,19 +393,24 @@ pub struct Types {
 pub trait ComponentSet {
     const MAX_OUTPUT_COUNT: usize;
 
-    type ParamDefaults: Iterator<Item = Value>;
+    type ParamDefaults: ExactSizeIterator<Item = Value> + Send;
 
     fn types(&self) -> Types;
 
     fn param_defaults(&self) -> Self::ParamDefaults;
 
-    fn output<Ctx>(&self, id: AnyOutputSpec, ctx: &mut Ctx) -> Option<Value>
+    // TODO: Support MIDI
+    fn update<Ctx>(&mut self, ctx: Ctx)
     where
-        for<'a> &'a mut Ctx: GetInput<AnyInputSpec> + GetParam<AnyParamSpec>;
+        Ctx: GetInput<AnyInputSpec, Value> + GetParam<AnyParamSpec>;
+}
 
-    fn update<Ctx>(&mut self, ctx: &mut Ctx)
+pub trait ComponentSetOut<Val>: ComponentSet {
+    type OutputIter: ExactSizeIterator<Item = Val> + Send;
+
+    fn output<Ctx>(&self, id: AnyOutputSpec, ctx: Ctx) -> Self::OutputIter
     where
-        for<'a> &'a mut Ctx: GetInput<AnyInputSpec> + GetParam<AnyParamSpec>;
+        Ctx: GetInput<AnyInputSpec, Value> + GetParam<AnyParamSpec>;
 }
 
 pub struct QuickContext<C, InputFn, ParamFn> {
@@ -335,21 +419,9 @@ pub struct QuickContext<C, InputFn, ParamFn> {
     param_fn: ParamFn,
 }
 
-impl<F, Spec> GetInput<Spec> for &'_ mut F
-where
-    F: FnMut(Spec) -> Option<Value>,
-{
-    fn input(self, spec: Spec) -> Option<Value> {
-        self(spec)
-    }
-}
-
-impl<F, Spec> GetInput<Spec> for &'_ F
-where
-    F: Fn(Spec) -> Option<Value>,
-{
-    fn input(self, spec: Spec) -> Option<Value> {
-        self(spec)
+impl<InputFn> QuickContext<(), InputFn, ()> {
+    pub fn input(input_fn: InputFn) -> Self {
+        Self::new((), input_fn, ())
     }
 }
 
@@ -363,59 +435,45 @@ impl<C, InputFn, ParamFn> QuickContext<C, InputFn, ParamFn> {
     }
 }
 
-impl<C, InputFn, ParamFn, Spec> GetInput<Spec> for &'_ mut QuickContext<&'_ mut C, InputFn, ParamFn>
+// TODO: Support MIDI inputs
+impl<C, InputFn, ParamFn, Spec, I> GetInput<Spec, Value> for QuickContext<C, InputFn, ParamFn>
 where
-    InputFn: FnMut(&mut C, Spec) -> Option<Value>,
+    InputFn: Fn(&C, Spec) -> Option<I>,
+    I: ExactSizeIterator<Item = Value> + Send,
 {
-    fn input(self, spec: Spec) -> Option<Value> {
-        (self.input_fn)(self.ctx, spec)
+    type Iter = I;
+
+    fn input(&self, spec: Spec) -> Option<Self::Iter> {
+        (self.input_fn)(&self.ctx, spec)
     }
 }
 
-impl<C, InputFn, ParamFn, Spec> GetParam<Spec> for &'_ mut QuickContext<&'_ mut C, InputFn, ParamFn>
+impl<C, InputFn, ParamFn, Spec> GetParam<Spec> for QuickContext<C, InputFn, ParamFn>
 where
-    ParamFn: FnMut(&mut C, Spec) -> Value,
+    ParamFn: Fn(&C, Spec) -> Value,
 {
-    fn param(self, spec: Spec) -> Value {
-        (self.param_fn)(self.ctx, spec)
+    fn param(&self, spec: Spec) -> Value {
+        (self.param_fn)(&self.ctx, spec)
     }
 }
 
-impl<C, InputFn, ParamFn, Spec> GetInput<Spec> for &'_ mut QuickContext<&'_ C, InputFn, ParamFn>
+impl<C, Spec, V> GetInput<Spec, V> for &'_ C
 where
-    InputFn: FnMut(&C, Spec) -> Option<Value>,
+    C: GetInput<Spec, V>,
 {
-    fn input(self, spec: Spec) -> Option<Value> {
-        (self.input_fn)(self.ctx, spec)
+    type Iter = C::Iter;
+
+    fn input(&self, spec: Spec) -> Option<Self::Iter> {
+        C::input(*self, spec)
     }
 }
 
-impl<C, InputFn, ParamFn, Spec> GetParam<Spec> for &'_ mut QuickContext<&'_ C, InputFn, ParamFn>
+impl<C, Spec> GetParam<Spec> for &'_ C
 where
-    ParamFn: FnMut(&C, Spec) -> Value,
+    C: GetParam<Spec>,
 {
-    fn param(self, spec: Spec) -> Value {
-        (self.param_fn)(self.ctx, spec)
-    }
-}
-
-impl<C, InputFn, ParamFn, Spec> GetInput<Spec> for &'_ QuickContext<C, InputFn, ParamFn>
-where
-    C: Copy,
-    InputFn: Fn(C, Spec) -> Option<Value>,
-{
-    fn input(self, spec: Spec) -> Option<Value> {
-        (self.input_fn)(self.ctx, spec)
-    }
-}
-
-impl<C, InputFn, ParamFn, Spec> GetParam<Spec> for &'_ QuickContext<C, InputFn, ParamFn>
-where
-    C: Copy,
-    ParamFn: Fn(C, Spec) -> Value,
-{
-    fn param(self, spec: Spec) -> Value {
-        (self.param_fn)(self.ctx, spec)
+    fn param(&self, spec: Spec) -> Value {
+        C::param(*self, spec)
     }
 }
 
@@ -437,10 +495,14 @@ impl<Id> ElementSpecifier<Id> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Input;
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Output;
+mod marker {
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    pub struct Param;
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    pub struct Input;
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    pub struct Output;
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct GenericWire<Marker, Id> {
@@ -449,45 +511,72 @@ struct GenericWire<Marker, Id> {
     _marker: PhantomData<Marker>,
 }
 
-impl<M> NewWire<M> {
-    fn fill_id(self, f: impl FnOnce(usize) -> ComponentId) -> Wire<M> {
-        Wire(GenericWire {
-            io_index: self.0.io_index,
-            element: self.0.element.fill_id(f),
-            _marker: PhantomData,
-        })
-    }
-}
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Wire<Marker>(GenericWire<Marker, ComponentId>);
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct NewWire<Marker>(GenericWire<Marker, ()>);
 
-impl NewWire<Input> {
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct WireSrc(GenericWire<marker::Output, ()>);
+
+#[derive(Debug, Clone, PartialEq)]
+enum WireDstInner {
+    Param(Value, GenericWire<marker::Param, ()>),
+    Input(GenericWire<marker::Input, ()>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WireDst(WireDstInner);
+
+impl WireDst {
     pub fn rack_output<S: Specifier>(output: S) -> Self {
-        NewWire(GenericWire {
+        WireDst(WireDstInner::Input(GenericWire {
             io_index: output.id(),
             element: ElementSpecifier::Rack,
             _marker: PhantomData,
-        })
+        }))
     }
 
     pub fn component_input<S: Specifier>(component_index: usize, input: S) -> Self {
-        NewWire(GenericWire {
+        WireDst(WireDstInner::Input(GenericWire {
             io_index: input.id(),
             element: ElementSpecifier::Component {
                 id: (),
                 index: component_index,
             },
             _marker: PhantomData,
-        })
+        }))
+    }
+
+    pub fn component_param<S: Specifier, V: Into<Value>>(
+        component_index: usize,
+        param: S,
+        value: V,
+    ) -> Self {
+        let value = value.into();
+        WireDst(WireDstInner::Param(
+            value,
+            GenericWire {
+                io_index: param.id(),
+                element: ElementSpecifier::Component {
+                    id: (),
+                    index: component_index,
+                },
+                _marker: PhantomData,
+            },
+        ))
     }
 }
 
-impl NewWire<Output> {
+impl WireSrc {
+    fn fill_id(self, f: impl FnOnce(usize) -> ComponentId) -> Wire<marker::Output> {
+        Wire(GenericWire {
+            io_index: self.0.io_index,
+            element: self.0.element.fill_id(f),
+            _marker: PhantomData,
+        })
+    }
+
     pub fn rack_input<S: Specifier>(input: S) -> Self {
-        NewWire(GenericWire {
+        WireSrc(GenericWire {
             io_index: input.id(),
             element: ElementSpecifier::Rack,
             _marker: PhantomData,
@@ -495,7 +584,7 @@ impl NewWire<Output> {
     }
 
     pub fn component_output<S: Specifier>(component_index: usize, output: S) -> Self {
-        NewWire(GenericWire {
+        WireSrc(GenericWire {
             io_index: output.id(),
             element: ElementSpecifier::Component {
                 id: (),
@@ -515,14 +604,19 @@ where
     }
 }
 
-// TODO: Also allow this to be a parameter somehow
-impl<Id> GenericWire<Input, Id> {
+impl<Id> GenericWire<marker::Input, Id> {
     fn input_id(&self) -> AnyInputSpec {
         AnyInputSpec(self.io_index)
     }
 }
 
-impl<Id> GenericWire<Output, Id> {
+impl<Id> GenericWire<marker::Param, Id> {
+    fn param_id(&self) -> AnyInputSpec {
+        AnyInputSpec(self.io_index)
+    }
+}
+
+impl<Id> GenericWire<marker::Output, Id> {
     fn output_id(&self) -> AnyOutputSpec {
         AnyOutputSpec(self.io_index)
     }
@@ -532,20 +626,24 @@ impl<Id> GenericWire<Output, Id> {
 pub struct ComponentId(usize);
 
 #[derive(Debug, Clone, PartialEq)]
+struct ParamWire {
+    src: Wire<marker::Output>,
+    value: Value,
+}
+
+// TODO: Scenes
+#[derive(Debug, Clone, PartialEq)]
+struct ParamValue {
+    natural_value: Value,
+    wire: Option<ParamWire>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 struct TaggedComponent<C> {
     id: ComponentId,
     inner: C,
-    params: Vec<Value>,
-    wires: Vec<Option<Wire<Output>>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum RackComponent<C> {
-    Component(C),
-    Group {
-        inputs: Vec<ValueType>,
-        outputs: Vec<ValueType>,
-    },
+    params: Vec<ParamValue>,
+    wires: Vec<Option<Wire<marker::Output>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -568,10 +666,8 @@ impl ComponentIdGen {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rack<C, InputSpec, OutputSpec> {
     ids: ComponentIdGen,
-    previous_outputs: Vec<Vec<Cell<SavedValue>>>,
-    current_outputs: Vec<Vec<Cell<SavedValue>>>,
     components: Vec<TaggedComponent<C>>,
-    out_wires: Vec<Option<Wire<Output>>>,
+    out_wires: Vec<Option<Wire<marker::Output>>>,
     _marker: PhantomData<(InputSpec, OutputSpec)>,
 }
 
@@ -579,51 +675,46 @@ impl<C, InputSpec, OutputSpec> Rack<C, InputSpec, OutputSpec>
 where
     InputSpec: Specifier,
     OutputSpec: Specifier,
-    C: ComponentSet,
+    C: ComponentSetOut<Value>,
 {
     pub fn new() -> Self {
         use std::iter;
 
         Rack {
             ids: ComponentIdGen::new(),
-            previous_outputs: vec![],
-            current_outputs: vec![],
             components: vec![],
             out_wires: iter::repeat(None).take(OutputSpec::TYPES.len()).collect(),
             _marker: PhantomData,
         }
     }
 
-    pub fn update<Ctx>(&mut self, ctx: &Ctx)
+    pub fn update<Ctx>(&mut self, ctx: Ctx)
     where
-        for<'a> &'a Ctx: GetInput<InputSpec>,
+        Ctx: GetInput<InputSpec, Value>,
     {
-        use std::{iter, mem};
-
-        mem::swap(&mut self.previous_outputs, &mut self.current_outputs);
-
-        for o in &mut self.current_outputs {
-            o.clear();
-        }
-
-        if self.current_outputs.len() < self.components.len() {
-            self.current_outputs.extend(
-                iter::repeat(vec![]).take(self.components.len() - self.current_outputs.len()),
-            );
-        }
-
-        self.as_slice().update(ctx);
+        self.as_slice().update(SimpleCow::Owned(ctx));
     }
 
     // TODO: Return a result
-    pub fn wire(&mut self, output: NewWire<Output>, input: NewWire<Input>) {
-        let filled_output = output.fill_id(|index| self.components[index].id);
-        match input.0.element() {
-            ElementSpecifier::Component { id: _, index } => {
-                self.components[index].wires[input.0.input_id().0] = Some(filled_output);
-            }
-            ElementSpecifier::Rack => self.out_wires[input.0.input_id().0] = Some(filled_output),
-        };
+    pub fn wire(&mut self, src: WireSrc, dst: WireDst) {
+        let filled_output = src.fill_id(|index| self.components[index].id);
+        match dst.0 {
+            WireDstInner::Input(dst) => match dst.element() {
+                ElementSpecifier::Component { id: (), index } => {
+                    self.components[index].wires[dst.input_id().0] = Some(filled_output);
+                }
+                ElementSpecifier::Rack => self.out_wires[dst.input_id().0] = Some(filled_output),
+            },
+            WireDstInner::Param(val, dst) => match dst.element() {
+                ElementSpecifier::Component { id: (), index } => {
+                    self.components[index].params[dst.param_id().0].wire = Some(ParamWire {
+                        value: val,
+                        src: filled_output,
+                    })
+                }
+                ElementSpecifier::Rack => unimplemented!(),
+            },
+        }
     }
 
     pub fn set_param<S: Specifier, V: Into<Value>>(
@@ -632,7 +723,7 @@ where
         param: S,
         value: V,
     ) {
-        self.components[component].params[param.id()] = value.into();
+        self.components[component].params[param.id()].natural_value = value.into();
     }
 
     pub fn new_component(&mut self, component: impl Into<C>) -> usize {
@@ -645,7 +736,12 @@ where
             id: self.ids.next(),
             inner: component,
             wires: vec![None; num_inputs],
-            params: params.collect(),
+            params: params
+                .map(|def| ParamValue {
+                    natural_value: def,
+                    wire: None,
+                })
+                .collect(),
         });
 
         out
@@ -653,182 +749,217 @@ where
 
     /// Get a specific output of this rack. This takes a mutable reference because it technically
     /// isn't pure, but it _is_ idempotent.
-    pub fn output<Ctx>(&mut self, spec: OutputSpec, ctx: &Ctx) -> Option<Value>
+    pub fn output<'a, Ctx: 'a>(
+        &mut self,
+        spec: OutputSpec,
+        ctx: Ctx,
+    ) -> Option<impl ExactSizeIterator<Item = Value> + Send + 'a>
     where
-        for<'a> &'a Ctx: GetInput<InputSpec>,
+        Ctx: GetInput<InputSpec, Value>,
+        C: 'a,
     {
         let wire = self.out_wires[spec.id()]?;
 
-        let out = self.as_slice().output(wire, ctx);
+        let out = self.as_slice().as_ref().output(wire, &ctx);
+
         out
     }
 
-    fn as_slice(&mut self) -> RackSlice<'_, C, InputSpec> {
+    fn as_slice(&mut self) -> RackSlice<&'_ mut [TaggedComponent<C>], InputSpec> {
         RackSlice {
-            previous_outputs: &self.previous_outputs,
-            current_outputs: &mut self.current_outputs,
-            current_component: None,
             components: &mut self.components,
             _marker: PhantomData::<InputSpec>,
         }
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
-enum SavedValue {
-    Calculating,
-    NotCalculated,
-    Calculated(Option<Value>),
-}
-
-impl SavedValue {
-    fn to_option(self) -> Option<Value> {
-        match self {
-            Self::NotCalculated | Self::Calculating => None,
-            Self::Calculated(val) => val,
-        }
-    }
-}
-
-struct RackSlice<'a, C, InputSpec> {
-    previous_outputs: &'a [Vec<Cell<SavedValue>>],
-    current_outputs: &'a mut [Vec<Cell<SavedValue>>],
-    current_component: Option<(&'a TaggedComponent<C>, &'a [Cell<SavedValue>])>,
-    components: &'a mut [TaggedComponent<C>],
+// At one point we cached intermediate values, but I think that the
+struct RackSlice<Components, InputSpec> {
+    components: Components,
     _marker: PhantomData<InputSpec>,
 }
 
-impl<C, InputSpec> RackSlice<'_, C, InputSpec>
+fn get_input<'inner, 'outer, InputSpec, Ctx, C>(
+    (ctx, wires, rest, _): &'inner (
+        &'outer Ctx,
+        &'outer [Option<Wire<marker::Output>>],
+        &'outer [TaggedComponent<C>],
+        &'outer [ParamValue],
+    ),
+    spec: AnyInputSpec,
+) -> Option<impl ExactSizeIterator<Item = Value> + Send + 'outer>
 where
-    C: ComponentSet,
+    InputSpec: Specifier,
+    C: ComponentSetOut<Value>,
+    C::OutputIter: 'outer,
+    Ctx: GetInput<InputSpec, Value>,
+{
+    let wire = wires[spec.0]?;
+
+    // TODO: When generic associated types are implemented we can remove
+    //       this allocation
+    Some(
+        RackSlice {
+            components: *rest,
+            _marker: PhantomData,
+        }
+        .output(wire, *ctx)?,
+    )
+}
+
+fn get_param<'inner, 'outer, InputSpec, Ctx, C>(
+    (ctx, _, rest, params): &'inner (
+        &'outer Ctx,
+        &'outer [Option<Wire<marker::Output>>],
+        &'outer [TaggedComponent<C>],
+        &'outer [ParamValue],
+    ),
+    spec: AnyParamSpec,
+) -> Value
+where
+    InputSpec: Specifier,
+    C: ComponentSetOut<Value>,
+    C::OutputIter: 'outer,
+    Ctx: GetInput<InputSpec, Value>,
+{
+    use fixed::FixedU32;
+
+    type UCont = FixedU32<consts::U32>;
+
+    let ParamValue {
+        natural_value: nat_val,
+        wire,
+    } = &params[spec.0];
+
+    wire.as_ref()
+        .and_then(|ParamWire { src, value }| {
+            RackSlice {
+                components: *rest,
+                _marker: PhantomData,
+            }
+            .output(*src, *ctx)
+            .map(|outputs| (value, outputs))
+        })
+        .map(|(wire_value, outputs)| {
+            let wire_value = s_to_u(*wire_value);
+            let len = outputs.len() as u32;
+            let average_output_this_tick: UCont = outputs.map(|o| s_to_u(o) / len).sum();
+            let unat = s_to_u(*nat_val);
+
+            // Weighted average: wire value == max means out is `average_output_this_tick`,
+            // wire value == min means out is `unat`, and values between those extremes lerp
+            // between the two.
+            u_to_s(
+                (unat * (UCont::max_value() - average_output_this_tick))
+                    + wire_value * average_output_this_tick,
+            )
+        })
+        .unwrap_or(*nat_val)
+}
+
+impl<C, InputSpec> RackSlice<&'_ mut [TaggedComponent<C>], InputSpec>
+where
+    C: ComponentSetOut<Value>,
     InputSpec: Specifier,
 {
-    fn update<Ctx>(&mut self, ctx: &Ctx)
+    fn update<Ctx>(&mut self, ctx: SimpleCow<'_, Ctx>)
     where
-        for<'a> &'a Ctx: GetInput<InputSpec>,
+        Ctx: GetInput<InputSpec, Value>,
     {
         for index in (0..self.components.len()).rev() {
             let (rest, this) = self.components.split_at_mut(index);
             let this = &mut this[0];
 
             let inner = &mut this.inner;
-            let wires = &this.wires;
-            let params = &this.params;
+            let wires = &this.wires[..];
+            let params = &this.params[..];
 
-            let previous_outputs = self.previous_outputs;
-            let current_outputs = &mut *self.current_outputs;
-
-            inner.update(&mut QuickContext::new(
-                ctx,
-                |ctx: &Ctx, spec: AnyInputSpec| {
-                    let wire = wires[spec.0]?;
-
-                    RackSlice {
-                        previous_outputs,
-                        current_outputs,
-                        current_component: None,
-                        components: rest,
-                        _marker: PhantomData,
-                    }
-                    .output(wire, ctx)
-                },
-                |_: &Ctx, spec: AnyParamSpec| params[spec.0],
+            inner.update(QuickContext::new(
+                (ctx.as_ref(), wires, &*rest, params),
+                get_input::<InputSpec, Ctx, C>,
+                get_param::<InputSpec, Ctx, C>,
             ));
         }
     }
 
-    fn output<Ctx>(&mut self, Wire(wire): Wire<Output>, ctx: &Ctx) -> Option<Value>
-    where
-        for<'a> &'a Ctx: GetInput<InputSpec>,
-    {
-        use std::iter;
+    fn as_ref(&self) -> RackSlice<&'_ [TaggedComponent<C>], InputSpec> {
+        RackSlice {
+            components: &*self.components,
+            _marker: PhantomData,
+        }
+    }
+}
 
+enum SimpleCow<'a, C> {
+    Borrowed(&'a C),
+    Owned(C),
+}
+
+impl<'a, C> SimpleCow<'a, C> {
+    fn as_ref(&self) -> &C {
+        match self {
+            Self::Borrowed(v) => v,
+            Self::Owned(v) => v,
+        }
+    }
+}
+
+impl<C> From<C> for SimpleCow<'static, C> {
+    fn from(other: C) -> Self {
+        SimpleCow::Owned(other)
+    }
+}
+
+impl<'a, C> From<&'a C> for SimpleCow<'a, C> {
+    fn from(other: &'a C) -> Self {
+        SimpleCow::Borrowed(other)
+    }
+}
+
+impl<C, InputSpec> RackSlice<&'_ [TaggedComponent<C>], InputSpec>
+where
+    C: ComponentSetOut<Value>,
+    InputSpec: Specifier,
+{
+    fn output<Ctx>(
+        &self,
+        Wire(wire): Wire<marker::Output>,
+        ctx: &Ctx,
+    ) -> Option<impl ExactSizeIterator<Item = Value> + Send>
+    where
+        Ctx: GetInput<InputSpec, Value>,
+    {
         match wire.element() {
             ElementSpecifier::Component { id, index } => {
-                match self
-                    .current_outputs
-                    .get(index)
-                    .and_then(|out| out.get(wire.output_id().0))
-                    .map(|cell| cell.get())
-                {
-                    // TODO: Do we reserve `None` for "not wired" so that we can change
-                    //       behaviour based on whether or not an input is wired, semi-
-                    //       modular synth-style?
-                    Some(SavedValue::Calculating) => return None,
-                    Some(SavedValue::Calculated(val)) => return val,
-                    None | Some(SavedValue::NotCalculated) => {}
-                }
-
-                let saved_out = self
-                    .previous_outputs
-                    .get(index)
-                    .and_then(|outs| outs.get(wire.output_id().0))
-                    .and_then(|out| out.get().to_option());
-
-                // This complicated if-else chain is to support components being wired to themselves
-                let (rest, this, rest_outputs, this_output) = if index < self.components.len() {
-                    let (rest, this) = self.components.split_at_mut(index);
-                    let (rest_outputs, this_output) = self.current_outputs.split_at_mut(index);
-
-                    let this_output = &mut this_output[0];
-
-                    if this_output.len() <= wire.output_id().0 {
-                        this_output.extend(
-                            iter::repeat(Cell::new(SavedValue::NotCalculated))
-                                .take(wire.output_id().0 + 1 - this_output.len()),
-                        );
-                    }
-
-                    let this_output: &[_] = &*this_output;
-
-                    (rest, &this[0], rest_outputs, this_output)
-                } else if index == self.components.len() {
-                    if let Some((comp, out)) = self.current_component {
-                        (&mut *self.components, comp, &mut *self.current_outputs, out)
-                    } else {
-                        return saved_out;
-                    }
-                } else {
-                    return saved_out;
-                };
+                let (rest, this) = self.components.split_at(index);
+                // TODO: We will never allow backwards- or self-wiring, so maybe we can have some
+                //       safe abstraction that allows us to omit checks in the `split_at_mut` and
+                //       here.
+                let this = &this[0];
 
                 if this.id != id {
                     // TODO: Disconnect this wire too?
                     return None;
                 }
 
-                let previous_outputs = self.previous_outputs;
-
                 let inner = &this.inner;
-                let wires = &this.wires;
-                let params = &this.params;
-
-                this_output[wire.output_id().0].set(SavedValue::Calculating);
+                let wires = &this.wires[..];
+                let params = &this.params[..];
 
                 let out = inner.output(
                     AnyOutputSpec(wire.output_id().0),
-                    &mut QuickContext::new(
-                        ctx,
-                        |ctx: &Ctx, spec: AnyInputSpec| {
-                            let wire = wires[spec.0]?;
-
-                            RackSlice {
-                                previous_outputs,
-                                current_outputs: rest_outputs,
-                                current_component: Some((this, this_output)),
-                                components: rest,
-                                _marker: PhantomData,
-                            }
-                            .output(wire, ctx)
-                        },
-                        |_: &Ctx, spec: AnyParamSpec| params[spec.0],
+                    QuickContext::new(
+                        (ctx, wires, rest, params),
+                        get_input::<InputSpec, Ctx, C>,
+                        get_param::<InputSpec, Ctx, C>,
                     ),
                 );
 
-                this_output[wire.output_id().0].set(SavedValue::Calculated(out));
-                out
+                Some(Either::Left(out))
             }
-            ElementSpecifier::Rack => ctx.input(InputSpec::from_id(wire.io_index)),
+            ElementSpecifier::Rack => ctx
+                .input(InputSpec::from_id(wire.io_index))
+                .map(Either::Right),
         }
     }
 }

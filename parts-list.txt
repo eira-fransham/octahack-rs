@@ -1,0 +1,64 @@
+Slider: https://www.sparkfun.com/products/9119 + https://www.sparkfun.com/products/9120
+Knobs: https://www.sparkfun.com/products/10597 + https://www.sparkfun.com/products/15140
+I/O buttons (illuminated): https://www.amazon.de/gp/product/B07SR4S6MS/
+Other buttons (main keyboard, fn/wire/super): https://www.amazon.de/gp/product/B07L4LSXNR/
+
+Relevant datasheets:
+Slider: http://cdn.sparkfun.com/datasheets/Components/Switches/SC608N-b10k.pdf
+Slider knob: https://www.sparkfun.com/datasheets/Components/Buttons/EPD-200140.pdf
+Rotary encoder: https://cdn.sparkfun.com/assets/4/2/9/a/a/Part_5239_EC12PLGRSDVF-D-25K-24-32___07-6H_H_.pdf
+Rotary enoder knob: http://cdn.sparkfun.com/datasheets/Components/General/P-15x13-T-T2-24A.pdf
+Key switch: https://www.cherrymx.de/en/dev.html
+Keycap: https://geekhack.org/index.php?topic=47039.0
+
+Bindings:
+Keyset:
+  32 keys on keyboard
+  Fn key (toggle/hold for fn mode)
+  Shift key (hold for alt functions)
+  Alt key (toggle/hold for alt mode)
+  3 contactless sliders
+  8 rotary encoders plus pushbutton
+
+2 modes active at a time, by default this is normal mode (select components, shift to wire) and edit file mode (sequencer for midi files, audio editor for audio files). Switch between them by holding or tapping the alt key (hold + using a control returns you to the previous mode when you let go, tap toggles you into that alt mode).
+Edit mode edits the file for the most-recently-accessed file parameter, or the first one if none have ever been
+accessed.
+
+Normal: keyboard maps to nth component
+  Hold shift: select input/output. First half of keyboard maps to inputs, second half to outputs.
+              Key is red = unwired, key is green = wired. Screen displays what the meaning of each
+              I/O is. The key pulses with light to show that input/output's value (lowest value is
+              still a dim glow). Pressing a key goes into wire mode, or if we're already in wire
+              mode it ends that wire by connecting the I/O to the I/O that we selected when we
+              entered wire mode. Pressing a knob will go into wire mode to wire that param to an
+              output.
+
+              Turning a rotary encoder while in wire mode will change the "wire value" for that
+              parameter - the value the parameter will take when the output is at its maximum
+              value. Pressing N while in wire mode deletes that wire, pressing Y or pressing the
+              same param/input/output again while in wire mode exits wire mode keeping the current
+              wire in place.
+Hold fn: keyboard maps to special functions - akin to the space bar in spacemacs
+Tap fn: toggle the keyboard to/from special function mode. The functions available depends on the 
+        currently-active mode, but some are always available like keypress quantisation.
+Tap rotary encoder: "special select" mode for that option. Meaning depends on option. For files
+                    it opens the file slot selection window, for a frequency option it might
+                    allow fine control plus using other knobs to choose note vs raw freq, for
+                    a time option it might allow enabling/disabling choose beat/fraction of beat vs
+                    choose seconds, etc.
+
+Hold rotary encoder + rotate: fast change - increases speed of changing options
+In function mode, rotary encoders are shortcuts to certain options. Shift + press that rotary encoder
+while in function mode puts you into a mode where pressing the next rotary encoder will map that shortcut to
+the respective param.
+Function mode functions (incomplete list):
+  Quantise next command to some number of beats
+Shift plus selecting a function mode function will, for many functions, "lock" that function. For
+example, for quantise next command it will quantise _all_ commands until you deselect quantisation.
+
+3 sliders, 1 is for scenes (TODO: Should this be configurable?) and the other 2 are just rack inputs that can
+be wired to anything (v/o, params, etc).
+
+At any time N (for no) is a kind of "escape" or "panic" key, taking you back to the default state. Sometimes it
+acts as "no option", for example if you're in "set key quantisation" mode and press N, it will choose no key
+quantisation.

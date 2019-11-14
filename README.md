@@ -16,7 +16,9 @@ A component is a mapping from inputs to outputs, and acts in a "push/pull" manne
 
 ### I/O
 
-The data that flows through components is typed, where inputs can only be wired to outputs of corresponding types. The only types I'm intending to support to begin with are: MIDI, audio, and gate. Gate is any "trigger" input, and is used for things like the input of ADSR generators. Audio is just a number representing the instantaneous amplitude of the audio signal, and so non-audio continuous data like LFOs should also just be audio output.
+The data that flows through components is typed, where inputs can only be wired to outputs of corresponding types. Inputs are either "continuous", roughly akin to the analogue I/O in Eurorack, or MIDI. MIDI is separate instead of being split into analogue components since any components that need to work with MIDI can far easier process the commands instead of having separate I/O for every CC, every note (which would also mean we'd have to have a set maximum number of voices), et cetera. You could also imagine that certain components could understand nonstandard MIDI messages while others let them pass through. It's possible that in the future I'll allow continuous inputs to be directly wired to elements of a MIDI output, transparently inserting a stateful MIDI-to-analogue converter on an as-needed basis. This way, if only CC 5 (for example) is used, only the work to maintain state for CC 5 will be done, rather than maintaining state for every possible part of the MIDI space.
+
+Outputs can produce an arbitrary number of values per tick. For audio outputs this is understood to be audio channels, which means that we can write components in a number-of-channels-agnostic way and it means that left and right components don't need to be wired independently. This is important in a performance setting.
 
 ### Parameters
 
@@ -26,7 +28,7 @@ Unlike in a traditional modular rack, where any parameters that should be contro
 - Locking parameters together (so changing one will always change another)
 - Adding parameters to groups that can control one-or-more parameters of subcomponents
 
-Plus it means that automating parameters is more lightweight, where any parameter _can_ be automated, but you don't have to clutter up the list of inputs with control inputs. Probably when a parameter is wired to an output turning the knob corresponding to the parameter should change the multiplier for that parameter, instead of requiring a separate attenuverter.
+Plus it means that automating parameters is more lightweight, where any parameter _can_ be automated, but you don't have to clutter up the list of inputs with control inputs. When a parameter is wired to an output, the output being at the minimum possible value will give it its "natural value" (i.e. the value it would have if it wasn't wired at all), whereas you can also set the "wired value", which will be the value that the parameter will have if the output is at the maximum possible value.
 
 ### File editors
 
@@ -34,7 +36,7 @@ In order to allow components working with MIDI to interact better, instead of ha
 
 ### Recording
 
-Since this is a system built for performance, recording has to be a first-class citizen. I think that, similar to how in Octatrack flex machines can play recordings just like any other flex slot, recordings should just be files and you should be able to work with them the same as any file. I don't know yet whether you should be able to have arbitrarily-expandable (i.e. infinite until you run out of memory) recording buffers or whether you should have to specify maximum recording time upfront, like the Octatrack. Certainly I think that you should be able to create an arbitrarily-high number of recording buffers as long as you don't run out of memory, instead of having both the size and number of the buffers fixed. Since any UI for recording is going to need to have support for wiring the recording input to an arbitrary output of an arbitrary component anyway, it makes sense to just make all recording work be done by components. The record start/stop should be controlled by gate inputs, so it can be automated.
+Since this is a system built for performance, recording has to be first-class. I think that, similar to how in Octatrack flex machines can play recordings just like any other flex slot, recordings should just be files and you should be able to work with them the same as any file. I don't know yet whether you should be able to have arbitrarily-expandable (i.e. infinite until you run out of memory) recording buffers or whether you should have to specify maximum recording time upfront, like the Octatrack. Certainly I think that you should be able to create an arbitrarily-high number of recording buffers as long as you don't run out of memory, instead of having both the size and number of the buffers fixed. The recording itself is just done with a component, rather than having any special place in the UI, since we'll have to have some way to choose an arbitrary output to record with anyway.
 
 While audio recording is obviously the most immediately-clear use of this, MIDI recording should use the exact same system.
 
@@ -48,3 +50,11 @@ Because of this system of saving/loading groups, I think that a slot-based syste
 - If you want two components to share the same file, you lock their "file" parameters together as mentioned in the earlier parameters section
 - We allow a "quick view" which shows all the files currently in use in the project, with files that are locked together shown as a single entry, but files that happen to be the same but are _not_ locked together shown as separate entries
 - When editing a file parameter, you are presented with the quick view along with an option to choose from the file system, and choosing from the quick view just locks the parameters together
+
+### Other helpers
+
+Some ideas for functionality that I think would be useful:
+
+- Quantise edits to beat: either quantise the next edit to a specified amount of time in beats or quantise _all_ edits until told otherwise. There could be a shortcut to quantise the next edit to whatever the last edit quantise was. This is useful for things like f.e. switching a wire from output A to output B on the end of the next bar, or to do quantised recording when combined with...
+- Immediately trigger input: for recorders and such, we want as much as possible of their interface to be controllable by other components, since it would be useful for automation purposes. If we simply have their interface be gate inputs but allow a simple and fast UI for triggering inputs, this could allow that easily. It could also allow users to connect these inputs to MIDI triggers if they like, which would make things like looping when you press a foot pedal possible.
+- Shortcut parameters: up to 8 parameters that are always quickly available, which can be set by a user.

@@ -1,11 +1,13 @@
+#![feature(type_alias_impl_trait, never_type)]
+
 // TODO: Remove all uses of `Vec`, make `Value` generic
 
-mod component;
-mod octahack_components;
-mod output;
+pub mod component;
+pub mod octahack_components;
+pub mod output;
 
 pub use component::{
-    AnyInputSpec, AnyOutputSpec, AnyParamSpec, Component, ComponentId, ComponentSet, Continuous,
-    Continuous16, GetInput, GetParam, NewWire, Param, Rack, SpecId, Specifier, Types, Value,
-    ValueType, Wire,
+    AnyInputSpec, AnyOutputSpec, AnyParamSpec, Component, ComponentId, ComponentSet,
+    ComponentSetOut, Context, GetInput, GetOutput, GetParam, Param, QuickContext, Rack, SpecId,
+    Specifier, Types, Value, ValueKind, ValueType, Wire, WireDst, WireSrc,
 };
