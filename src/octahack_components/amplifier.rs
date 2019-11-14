@@ -1,6 +1,5 @@
 use crate::{
-    AnyIter, Component, GetInput, GetOutput, GetParam, Param, SpecId, Specifier, Value, ValueIter,
-    ValueType,
+    AnyIter, Component, GetInput, GetParam, Param, SpecId, Specifier, Value, ValueIter, ValueType,
 };
 use fixed::types::I0F32;
 
@@ -38,15 +37,13 @@ impl Param for AmplifierIO {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct Amplifier;
 
 impl Component for Amplifier {
     type InputSpecifier = AmplifierIO;
     type OutputSpecifier = AmplifierIO;
     type ParamSpecifier = AmplifierIO;
-}
-
-impl GetOutput for Amplifier {
     type OutputIter = impl ValueIter + Send;
 
     fn output<Ctx>(&self, id: Self::OutputSpecifier, ctx: Ctx) -> Self::OutputIter
@@ -82,5 +79,12 @@ impl GetOutput for Amplifier {
                 .unwrap_or(vec![])
                 .into_iter(),
         )
+    }
+
+    fn update<Ctx>(&self, _: Ctx) -> Self
+    where
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
+    {
+        *self
     }
 }

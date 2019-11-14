@@ -99,10 +99,20 @@ pub trait Param: Specifier {
     fn default(&self) -> Value;
 }
 
-pub trait Component {
+pub trait Component: Sized {
     type InputSpecifier: Specifier;
     type OutputSpecifier: Specifier;
     type ParamSpecifier: Specifier;
+    // TODO: Use GATs to allow adapators to be used internally.
+    type OutputIter: ValueIter + Send;
+
+    fn output<Ctx>(&self, id: Self::OutputSpecifier, ctx: Ctx) -> Self::OutputIter
+    where
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
+
+    fn update<Ctx>(&self, _ctx: Ctx) -> Self
+    where
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
 }
 
 // TODO: Support MIDI inputs
@@ -226,21 +236,6 @@ where
     }
 }
 
-pub trait GetOutput: Component {
-    // TODO: Use GATs to allow adapators to be used internally.
-    type OutputIter: ValueIter + Send;
-
-    fn output<Ctx>(&self, id: Self::OutputSpecifier, ctx: Ctx) -> Self::OutputIter
-    where
-        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
-
-    fn update<Ctx>(&mut self, _ctx: Ctx)
-    where
-        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
-    {
-    }
-}
-
 pub trait Context<ISpec, PSpec>: GetInput<ISpec> + GetParam<PSpec> {
     /// Samples per second
     fn samples(&self) -> usize;
@@ -262,7 +257,7 @@ macro_rules! component_set {
     ($v:vis mod $name:ident { $($t:ident),* }) => {
         #[allow(dead_code)]
         $v mod $name {
-            use $crate::GetOutput;
+            use $crate::Component as _;
 
             pub enum Component {
                 $($t(super::$t)),*
@@ -467,7 +462,7 @@ macro_rules! component_set {
                 }
 
                 #[allow(unreachable_code)]
-                fn update<Ctx>(&mut self, ctx: Ctx)
+                fn update<Ctx>(&self, ctx: Ctx) -> Self
                 where
                     Ctx: $crate::GetInput<$crate::AnyInputSpec> + $crate::GetParam<$crate::AnyParamSpec>
                 {
@@ -476,7 +471,7 @@ macro_rules! component_set {
                             Self::$t(val) => {
                                 use $crate::Specifier;
 
-                                val.update(
+                                Self::$t(val.update(
                                     $crate::component::QuickContext::new(
                                         ctx,
                                         |ctx: &Ctx, spec: <super::$t as $crate::Component>::InputSpecifier| {
@@ -484,7 +479,7 @@ macro_rules! component_set {
                                         },
                                         |ctx: &Ctx, spec: <super::$t as $crate::Component>::ParamSpecifier| ctx.param($crate::AnyParamSpec(spec.id())),
                                     )
-                                )
+                                ))
                             },
                         )*
                     }
@@ -493,9 +488,9 @@ macro_rules! component_set {
 
             impl $crate::ComponentSetOut for Component
             where
-                $( super::$t: $crate::GetOutput ),*
+                $( super::$t: $crate::Component ),*
             {
-                type OutputIter = ValueIter<$(<super::$t as $crate::GetOutput>::OutputIter),*>;
+                type OutputIter = ValueIter<$(<super::$t as $crate::Component>::OutputIter),*>;
 
                 #[allow(unreachable_code)]
                 fn output<Ctx>(&self, id: $crate::AnyOutputSpec, ctx: Ctx) -> Self::OutputIter
@@ -546,7 +541,7 @@ pub trait ComponentSet {
     fn param_defaults(&self) -> Self::ParamDefaults;
 
     // TODO: Support MIDI
-    fn update<Ctx>(&mut self, ctx: Ctx)
+    fn update<Ctx>(&self, ctx: Ctx) -> Self
     where
         Ctx: GetInput<AnyInputSpec> + GetParam<AnyParamSpec>;
 }
@@ -1018,19 +1013,21 @@ where
     where
         Ctx: GetInput<InputSpec>,
     {
-        for index in (0..self.components.len()).rev() {
-            let (rest, this) = self.components.split_at_mut(index);
-            let this = &mut this[0];
+        for i in 0..self.components.len() {
+            let new = {
+                let this = &self.components[i];
+                let inner = &this.inner;
+                let wires = &this.wires[..];
+                let params = &this.params[..];
 
-            let inner = &mut this.inner;
-            let wires = &this.wires[..];
-            let params = &this.params[..];
+                inner.update(QuickContext::new(
+                    (ctx.as_ref(), wires, &*self.components, params),
+                    get_input::<InputSpec, Ctx, C>,
+                    get_param::<InputSpec, Ctx, C>,
+                ))
+            };
 
-            inner.update(QuickContext::new(
-                (ctx.as_ref(), wires, &*rest, params),
-                get_input::<InputSpec, Ctx, C>,
-                get_param::<InputSpec, Ctx, C>,
-            ));
+            self.components[0].inner = new;
         }
     }
 

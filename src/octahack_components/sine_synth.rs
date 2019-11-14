@@ -1,6 +1,5 @@
 use crate::{
-    AnyIter, Component, GetInput, GetOutput, GetParam, Param, SpecId, Specifier, Value, ValueIter,
-    ValueType,
+    AnyIter, Component, GetInput, GetParam, Param, SpecId, Specifier, Value, ValueIter, ValueType,
 };
 use fixed::types::I0F32;
 
@@ -57,17 +56,16 @@ impl Component for SineSynth {
     type InputSpecifier = !;
     type OutputSpecifier = SynthIO;
     type ParamSpecifier = SynthIO;
-}
-
-impl GetOutput for SineSynth {
     type OutputIter = impl ValueIter + Send;
 
-    fn update<Ctx>(&mut self, ctx: Ctx)
+    fn update<Ctx>(&self, ctx: Ctx) -> Self
     where
         Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
     {
         let freq = volt_to_octave(ctx.param(SynthIO));
-        self.tick += freq / FREQUENCY as f64;
+        SineSynth {
+            tick: self.tick + freq / FREQUENCY as f64,
+        }
     }
 
     fn output<Ctx>(&self, _: Self::OutputSpecifier, _: Ctx) -> Self::OutputIter

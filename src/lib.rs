@@ -8,6 +8,6 @@ pub mod output;
 
 pub use component::{
     AnyInputSpec, AnyIter, AnyOutputSpec, AnyParamSpec, Component, ComponentId, ComponentSet,
-    ComponentSetOut, Context, GetInput, GetOutput, GetParam, Param, QuickContext, Rack, SpecId,
-    Specifier, Types, Value, ValueIter, ValueKind, ValueType, Wire, WireDst, WireSrc,
+    ComponentSetOut, Context, GetInput, GetParam, Param, QuickContext, Rack, SpecId, Specifier,
+    Types, Value, ValueIter, ValueKind, ValueType, Wire, WireDst, WireSrc,
 };
