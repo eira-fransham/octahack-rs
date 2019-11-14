@@ -1,5 +1,5 @@
 Slider: https://www.sparkfun.com/products/9119 + https://www.sparkfun.com/products/9120
-Knobs: https://www.sparkfun.com/products/10597 + https://www.sparkfun.com/products/15140
+Knobs: https://www.tindie.com/products/arielnh56/high-resolution-absolute-encoder-128-positions/
 I/O buttons (illuminated): https://www.amazon.de/gp/product/B07SR4S6MS/
 Other buttons (main keyboard, fn/wire/super): https://www.amazon.de/gp/product/B07L4LSXNR/
 

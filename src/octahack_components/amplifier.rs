@@ -1,4 +1,7 @@
-use crate::{Component, GetInput, GetOutput, GetParam, Param, SpecId, Specifier, Value, ValueType};
+use crate::{
+    AnyIter, Component, GetInput, GetOutput, GetParam, Param, SpecId, Specifier, Value, ValueIter,
+    ValueType,
+};
 use fixed::types::I0F32;
 
 #[derive(Copy, Clone)]
@@ -37,103 +40,47 @@ impl Param for AmplifierIO {
 
 pub struct Amplifier;
 
-impl Spec for AmplifierIO {
-    type Type = Value;
-}
-
-impl Components for Amplifier {
-    type Inputs = hlist![
-        AmplifierIO(0),
-        AmplifierIO(1),
-        AmplifierIO(2),
-        AmplifierIO(3),
-        AmplifierIO(4),
-        AmplifierIO(5),
-        AmplifierIO(6),
-        AmplifierIO(7),
-    ];
-    type Outputs = hlist![
-        AmplifierIO(0),
-        AmplifierIO(1),
-        AmplifierIO(2),
-        AmplifierIO(3),
-        AmplifierIO(4),
-        AmplifierIO(5),
-        AmplifierIO(6),
-        AmplifierIO(7),
-    ];
-    type Params = AmplifierIO;
-}
-
-impl _GetOutput<AmplifierIO> for Amplifier {
-    type OutputIter = impl ExactSizeIterator<Item = Value>;
-
-    fn output<Ctx>(&self, id: AmplifierIO, ctx: Ctx) -> Self::OutputIter
-    where
-        Ctx: GetInputs<Self::Inputs> + GetParams<Self::Params>,
-    {
-        use az::Cast;
-
-        ctx.input(id)
-            .map(|inputs| {
-                {
-                    inputs
-                        .into_iter()
-                        .map(|i| i.cast())
-                        .map(|to_multiply: f32| {
-                            // TODO: Return `Result<Option<Value>, SomeError>` so we can differentiate between
-                            //       "no value" and "an error happened"
-                            let multiplication_factor: f32 =
-                                fixed::FixedU32::<typenum::consts::U32>::from_num(ctx.param(id))
-                                    .cast();
-
-                            Value::saturating_from_num(
-                                to_multiply * 2. * (multiplication_factor + 0.5),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                }
-            })
-            .unwrap_or(vec![])
-            .into_iter()
-    }
-}
 impl Component for Amplifier {
     type InputSpecifier = AmplifierIO;
     type OutputSpecifier = AmplifierIO;
     type ParamSpecifier = AmplifierIO;
 }
 
-impl GetOutput<Value> for Amplifier {
-    type OutputIter = impl ExactSizeIterator<Item = Value>;
+impl GetOutput for Amplifier {
+    type OutputIter = impl ValueIter + Send;
 
     fn output<Ctx>(&self, id: Self::OutputSpecifier, ctx: Ctx) -> Self::OutputIter
     where
-        Ctx: GetInput<Self::InputSpecifier, Value> + GetParam<Self::ParamSpecifier>,
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
     {
         use az::Cast;
 
-        ctx.input(id)
-            .map(|inputs| {
-                {
-                    inputs
-                        .into_iter()
-                        .map(|i| i.cast())
-                        .map(|to_multiply: f32| {
-                            // TODO: Return `Result<Option<Value>, SomeError>` so we can differentiate between
-                            //       "no value" and "an error happened"
-                            let multiplication_factor: f32 =
-                                fixed::FixedU32::<typenum::consts::U32>::from_num(ctx.param(id))
+        AnyIter::from(
+            ctx.input(id)
+                .map(|inputs| {
+                    {
+                        inputs
+                            .analog()
+                            .unwrap()
+                            .map(|i| i.cast())
+                            .map(|to_multiply: f32| {
+                                // TODO: Return `Result<Option<Value>, SomeError>` so we can differentiate between
+                                //       "no value" and "an error happened"
+                                let multiplication_factor: f32 =
+                                    fixed::FixedU32::<typenum::consts::U32>::from_num(
+                                        ctx.param(id),
+                                    )
                                     .cast();
 
-                            Value::saturating_from_num(
-                                to_multiply * 2. * (multiplication_factor + 0.5),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                }
-            })
-            .unwrap_or(vec![])
-            .into_iter()
+                                Value::saturating_from_num(
+                                    to_multiply * 2. * (multiplication_factor + 0.5),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                })
+                .unwrap_or(vec![])
+                .into_iter(),
+        )
     }
 }

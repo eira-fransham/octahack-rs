@@ -1,4 +1,6 @@
-use crate::{ComponentSetOut, QuickContext, Rack, SpecId, Specifier, Value, ValueKind};
+use crate::{
+    AnyIter, ComponentSetOut, QuickContext, Rack, SpecId, Specifier, ValueIter, ValueKind,
+};
 use fixed::types::{I0F16, I0F32};
 use rodio::Source;
 
@@ -133,7 +135,7 @@ where
 impl<'a, S, C, InputSpec, OutputSpec> AudioStreamer<'a, S, C, InputSpec, OutputSpec>
 where
     S: Source + Iterator<Item = i16> + 'a,
-    C: ComponentSetOut<Value> + 'static,
+    C: ComponentSetOut + 'static,
     InputSpec: Specifier,
     OutputSpec: Specifier,
 {
@@ -149,7 +151,7 @@ where
                         }
                     }
 
-                    Some(
+                    Some(AnyIter::from(
                         // TODO
                         Vec::from(
                             &$sources[id as usize
@@ -157,7 +159,7 @@ where
                         )
                         .into_iter()
                         .map(|val| I0F32::from_num(I0F16::from_bits(val))),
-                    )
+                    ))
                 })
             };
         }
@@ -207,7 +209,11 @@ where
                     iter: self
                         .rack
                         .output(OutputSpec::VALUES[new_id].clone(), ctx)
-                        .map(|val| val.map(|val| I0F16::from_num(val).to_bits())),
+                        .map(|val| {
+                            val.analog()
+                                .unwrap()
+                                .map(|val| I0F16::from_num(val).to_bits())
+                        }),
                     min_len: OutputSpec::from_id(new_id).value_type().channels.unwrap() as usize,
                 });
             } else {
@@ -220,7 +226,7 @@ where
 impl<'a, S, C, InputSpec, OutputSpec> Iterator for AudioStreamer<'a, S, C, InputSpec, OutputSpec>
 where
     S: Source + Iterator<Item = i16> + 'a,
-    C: ComponentSetOut<Value> + 'static,
+    C: ComponentSetOut + 'static,
     InputSpec: Specifier,
     OutputSpec: Specifier,
 {
@@ -244,7 +250,7 @@ impl<'a, S, C, InputSpec, OutputSpec> rodio::Source
     for AudioStreamer<'a, S, C, InputSpec, OutputSpec>
 where
     S: Source + Iterator<Item = i16> + 'a,
-    C: ComponentSetOut<Value> + 'static,
+    C: ComponentSetOut + 'static,
     InputSpec: Specifier,
     OutputSpec: Specifier,
 {

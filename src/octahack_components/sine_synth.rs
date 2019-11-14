@@ -1,4 +1,7 @@
-use crate::{Component, GetInput, GetOutput, GetParam, Param, SpecId, Specifier, Value, ValueType};
+use crate::{
+    AnyIter, Component, GetInput, GetOutput, GetParam, Param, SpecId, Specifier, Value, ValueIter,
+    ValueType,
+};
 use fixed::types::I0F32;
 
 // TODO: This should be in the context
@@ -56,24 +59,24 @@ impl Component for SineSynth {
     type ParamSpecifier = SynthIO;
 }
 
-impl GetOutput<Value> for SineSynth {
-    type OutputIter = impl ExactSizeIterator<Item = Value> + Send;
+impl GetOutput for SineSynth {
+    type OutputIter = impl ValueIter + Send;
 
     fn update<Ctx>(&mut self, ctx: Ctx)
     where
-        Ctx: GetInput<Self::InputSpecifier, Value> + GetParam<Self::ParamSpecifier>,
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
     {
         let freq = volt_to_octave(ctx.param(SynthIO));
         self.tick += freq / FREQUENCY as f64;
     }
 
-    fn output<Ctx>(&self, SynthIO: Self::OutputSpecifier, _: Ctx) -> Self::OutputIter
+    fn output<Ctx>(&self, _: Self::OutputSpecifier, _: Ctx) -> Self::OutputIter
     where
-        Ctx: GetInput<Self::InputSpecifier, Value> + GetParam<Self::ParamSpecifier>,
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
     {
-        std::iter::once(I0F32::saturating_from_num(
+        AnyIter::from(std::iter::once(I0F32::saturating_from_num(
             (2. * std::f64::consts::PI * self.tick).sin() / 2.,
-        ))
+        )))
     }
 }
 

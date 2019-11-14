@@ -20,8 +20,8 @@ pub const VOLT: I0F32 = I0F32::from_bits(0x28f5c29);
 #[cfg(test)]
 mod test {
     use crate::{
-        octahack_components::amplifier::AmplifierIO, ComponentSet, QuickContext, Rack, SpecId,
-        Specifier, Value, ValueType, WireDst, WireSrc,
+        octahack_components::amplifier::AmplifierIO, AnyIter, ComponentSet, QuickContext, Rack,
+        SpecId, Specifier, Value, ValueIter, ValueType, WireDst, WireSrc,
     };
     use fixed::types::I0F32;
 
@@ -66,14 +66,14 @@ mod test {
 
         let context = QuickContext::input(|_: &(), i| {
             Some(match i {
-                OneChannel => std::iter::once(I0F32::max_value()),
+                OneChannel => AnyIter::from(std::iter::once(I0F32::max_value())),
             })
         });
 
         rack.update(&context);
         assert_eq!(
             rack.output(OneChannel, context)
-                .map(|i| i.collect::<Vec<_>>()),
+                .map(|i| i.analog().unwrap().collect::<Vec<_>>()),
             Some(vec![I0F32::max_value()])
         );
     }

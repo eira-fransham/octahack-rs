@@ -107,28 +107,147 @@ pub trait Component {
 
 // TODO: Support MIDI inputs
 
-pub trait GetOutput<Val>: Component {
+pub trait ValueIter {
+    type Midi: ExactSizeIterator<Item = MidiEventType> + Send;
+    type Analog: ExactSizeIterator<Item = I0F32> + Send;
+
+    fn midi(self) -> Option<Self::Midi>;
+    fn analog(self) -> Option<Self::Analog>;
+}
+
+impl<A, B> ValueIter for Either<A, B>
+where
+    A: ValueIter,
+    B: ValueIter,
+{
+    type Midi = Either<A::Midi, B::Midi>;
+    type Analog = Either<A::Analog, B::Analog>;
+
+    fn midi(self) -> Option<Self::Midi> {
+        match self {
+            Self::Left(val) => val.midi().map(Either::Left),
+            Self::Right(val) => val.midi().map(Either::Right),
+        }
+    }
+    fn analog(self) -> Option<Self::Analog> {
+        match self {
+            Self::Left(val) => val.analog().map(Either::Left),
+            Self::Right(val) => val.analog().map(Either::Right),
+        }
+    }
+}
+
+/// Implementation detail since Rust doesn't take associated types into account when checking whether
+/// two implementations overlap.
+pub trait ValueIterImplHelper<T> {
+    type AnyIter: ValueIter + Send;
+
+    fn mk_valueiter(other: T) -> Self::AnyIter;
+}
+
+pub enum NoMidi {}
+pub enum NoAnalog {}
+
+impl Iterator for NoMidi {
+    type Item = MidiEventType;
+    fn next(&mut self) -> Option<Self::Item> {
+        unreachable!()
+    }
+}
+impl Iterator for NoAnalog {
+    type Item = I0F32;
+    fn next(&mut self) -> Option<Self::Item> {
+        unreachable!()
+    }
+}
+impl ExactSizeIterator for NoMidi {
+    fn len(&self) -> usize {
+        unreachable!()
+    }
+}
+impl ExactSizeIterator for NoAnalog {
+    fn len(&self) -> usize {
+        unreachable!()
+    }
+}
+
+impl<T: ExactSizeIterator<Item = MidiEventType> + Send> ValueIterImplHelper<T> for MidiEventType {
+    type AnyIter = AnyIter<T, NoAnalog>;
+    fn mk_valueiter(other: T) -> Self::AnyIter {
+        AnyIter::Midi(other)
+    }
+}
+
+impl<T: ExactSizeIterator<Item = I0F32> + Send> ValueIterImplHelper<T> for I0F32 {
+    type AnyIter = AnyIter<NoMidi, T>;
+
+    fn mk_valueiter(other: T) -> Self::AnyIter {
+        AnyIter::Analog(other)
+    }
+}
+
+impl<A, B, V> From<V> for AnyIter<A, B>
+where
+    A: ExactSizeIterator<Item = MidiEventType> + Send,
+    B: ExactSizeIterator<Item = I0F32> + Send,
+    V: ExactSizeIterator,
+    V::Item: ValueIterImplHelper<V, AnyIter = AnyIter<A, B>>,
+{
+    fn from(other: V) -> AnyIter<A, B> {
+        V::Item::mk_valueiter(other)
+    }
+}
+
+pub enum AnyIter<A, B> {
+    Midi(A),
+    Analog(B),
+}
+
+impl<A, B> ValueIter for AnyIter<A, B>
+where
+    A: ExactSizeIterator<Item = MidiEventType> + Send,
+    B: ExactSizeIterator<Item = I0F32> + Send,
+{
+    type Midi = A;
+    type Analog = B;
+
+    fn midi(self) -> Option<<Self as ValueIter>::Midi> {
+        match self {
+            Self::Midi(inner) => Some(inner),
+            Self::Analog(_) => None,
+        }
+    }
+
+    fn analog(self) -> Option<<Self as ValueIter>::Analog> {
+        match self {
+            Self::Midi(_) => None,
+            Self::Analog(inner) => Some(inner),
+        }
+    }
+}
+
+pub trait GetOutput: Component {
     // TODO: Use GATs to allow adapators to be used internally.
-    type OutputIter: ExactSizeIterator<Item = Val> + Send;
+    type OutputIter: ValueIter + Send;
 
     fn output<Ctx>(&self, id: Self::OutputSpecifier, ctx: Ctx) -> Self::OutputIter
     where
-        Ctx: GetInput<Self::InputSpecifier, Value> + GetParam<Self::ParamSpecifier>;
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
 
     fn update<Ctx>(&mut self, _ctx: Ctx)
     where
-        Ctx: GetInput<Self::InputSpecifier, Value> + GetParam<Self::ParamSpecifier>,
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
     {
     }
 }
 
-pub trait Context<ISpec, PSpec, Val>: GetInput<ISpec, Val> + GetParam<PSpec> {
+pub trait Context<ISpec, PSpec>: GetInput<ISpec> + GetParam<PSpec> {
     /// Samples per second
     fn samples(&self) -> usize;
 }
 
-pub trait GetInput<Spec, Val> {
-    type Iter: ExactSizeIterator<Item = Val> + Send;
+pub trait GetInput<Spec> {
+    type Iter: ValueIter + Send;
 
     // `None` means that this input is not wired
     fn input(&self, spec: Spec) -> Option<Self::Iter>;
@@ -163,10 +282,10 @@ macro_rules! component_set {
                 $( $t($t) ),*
             }
 
-            impl<$($t),*> Iterator for Iter<$($t),*>
-            where $($t: ExactSizeIterator<Item = $crate::Value>),*
+            impl<$($t),*, __V> Iterator for Iter<$($t),*>
+            where $($t: ExactSizeIterator<Item = __V>),*
             {
-                type Item = $crate::Value;
+                type Item = __V;
 
                 fn next(&mut self) -> Option<Self::Item> {
                     match self {
@@ -181,13 +300,40 @@ macro_rules! component_set {
                 }
             }
 
-            impl<$($t),*> std::iter::ExactSizeIterator for Iter<$($t),*>
-            where $($t: std::iter::ExactSizeIterator<Item = $crate::Value>),*
+            impl<$($t),*, __V> std::iter::ExactSizeIterator for Iter<$($t),*>
+            where $($t: std::iter::ExactSizeIterator<Item = __V>),*
             {
                 fn len(&self) -> usize {
                     match self {
                         $(
                             Self::$t(inner) => std::iter::ExactSizeIterator::len(inner),
+                        )*
+                    }
+                }
+            }
+
+            pub enum ValueIter<$($t),*> {
+                $( $t($t) ),*
+            }
+
+            impl<$($t),*> $crate::ValueIter for ValueIter<$($t),*>
+            where $($t: $crate::ValueIter),*
+            {
+                type Midi = Iter<$($t::Midi),*>;
+                type Analog = Iter<$($t::Analog),*>;
+
+                fn midi(self) -> Option<Self::Midi> {
+                    match self {
+                        $(
+                            Self::$t(inner) => inner.midi().map(Iter::$t),
+                        )*
+                    }
+                }
+
+                fn analog(self) -> Option<Self::Analog> {
+                    match self {
+                        $(
+                            Self::$t(inner) => inner.analog().map(Iter::$t),
                         )*
                     }
                 }
@@ -323,12 +469,12 @@ macro_rules! component_set {
                 #[allow(unreachable_code)]
                 fn update<Ctx>(&mut self, ctx: Ctx)
                 where
-                    Ctx: $crate::GetInput<$crate::AnyInputSpec, $crate::component::Value> + $crate::GetParam<$crate::AnyParamSpec>
+                    Ctx: $crate::GetInput<$crate::AnyInputSpec> + $crate::GetParam<$crate::AnyParamSpec>
                 {
                     match self {
                         $(
                             Self::$t(val) => {
-                                use $crate::{Component, Specifier};
+                                use $crate::Specifier;
 
                                 val.update(
                                     $crate::component::QuickContext::new(
@@ -345,23 +491,23 @@ macro_rules! component_set {
                 }
             }
 
-            impl $crate::ComponentSetOut<$crate::component::Value> for Component
+            impl $crate::ComponentSetOut for Component
             where
-                $( super::$t: $crate::GetOutput<$crate::component::Value> ),*
+                $( super::$t: $crate::GetOutput ),*
             {
-                type OutputIter = Iter<$(<super::$t as $crate::GetOutput<$crate::component::Value>>::OutputIter),*>;
+                type OutputIter = ValueIter<$(<super::$t as $crate::GetOutput>::OutputIter),*>;
 
                 #[allow(unreachable_code)]
                 fn output<Ctx>(&self, id: $crate::AnyOutputSpec, ctx: Ctx) -> Self::OutputIter
                 where
-                    Ctx: $crate::GetInput<$crate::AnyInputSpec, $crate::component::Value> + $crate::GetParam<$crate::AnyParamSpec>
+                    Ctx: $crate::GetInput<$crate::AnyInputSpec> + $crate::GetParam<$crate::AnyParamSpec>
                 {
                     match self {
                         $(
                             Self::$t(val) => {
-                                use $crate::{Component, Specifier};
+                                use $crate::Specifier;
 
-                                Iter::$t(val.output(
+                                ValueIter::$t(val.output(
                                     <<super::$t as $crate::Component>::OutputSpecifier as $crate::Specifier>::from_id(id.0),
                                     $crate::component::QuickContext::new(
                                         ctx,
@@ -402,15 +548,20 @@ pub trait ComponentSet {
     // TODO: Support MIDI
     fn update<Ctx>(&mut self, ctx: Ctx)
     where
-        Ctx: GetInput<AnyInputSpec, Value> + GetParam<AnyParamSpec>;
+        Ctx: GetInput<AnyInputSpec> + GetParam<AnyParamSpec>;
 }
 
-pub trait ComponentSetOut<Val>: ComponentSet {
-    type OutputIter: ExactSizeIterator<Item = Val> + Send;
+pub trait ComponentSetOut: ComponentSet {
+    type OutputIter: ValueIter + Send;
 
     fn output<Ctx>(&self, id: AnyOutputSpec, ctx: Ctx) -> Self::OutputIter
     where
-        Ctx: GetInput<AnyInputSpec, Value> + GetParam<AnyParamSpec>;
+        Ctx: GetInput<AnyInputSpec> + GetParam<AnyParamSpec>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContextMeta {
+    pub samples: usize,
 }
 
 pub struct QuickContext<C, InputFn, ParamFn> {
@@ -436,10 +587,10 @@ impl<C, InputFn, ParamFn> QuickContext<C, InputFn, ParamFn> {
 }
 
 // TODO: Support MIDI inputs
-impl<C, InputFn, ParamFn, Spec, I> GetInput<Spec, Value> for QuickContext<C, InputFn, ParamFn>
+impl<C, InputFn, ParamFn, Spec, I> GetInput<Spec> for QuickContext<C, InputFn, ParamFn>
 where
     InputFn: Fn(&C, Spec) -> Option<I>,
-    I: ExactSizeIterator<Item = Value> + Send,
+    I: ValueIter + Send,
 {
     type Iter = I;
 
@@ -457,9 +608,9 @@ where
     }
 }
 
-impl<C, Spec, V> GetInput<Spec, V> for &'_ C
+impl<C, Spec> GetInput<Spec> for &'_ C
 where
-    C: GetInput<Spec, V>,
+    C: GetInput<Spec>,
 {
     type Iter = C::Iter;
 
@@ -675,7 +826,7 @@ impl<C, InputSpec, OutputSpec> Rack<C, InputSpec, OutputSpec>
 where
     InputSpec: Specifier,
     OutputSpec: Specifier,
-    C: ComponentSetOut<Value>,
+    C: ComponentSetOut,
 {
     pub fn new() -> Self {
         use std::iter;
@@ -690,7 +841,7 @@ where
 
     pub fn update<Ctx>(&mut self, ctx: Ctx)
     where
-        Ctx: GetInput<InputSpec, Value>,
+        Ctx: GetInput<InputSpec>,
     {
         self.as_slice().update(SimpleCow::Owned(ctx));
     }
@@ -753,9 +904,9 @@ where
         &mut self,
         spec: OutputSpec,
         ctx: Ctx,
-    ) -> Option<impl ExactSizeIterator<Item = Value> + Send + 'a>
+    ) -> Option<impl ValueIter + Send + 'a>
     where
-        Ctx: GetInput<InputSpec, Value>,
+        Ctx: GetInput<InputSpec>,
         C: 'a,
     {
         let wire = self.out_wires[spec.id()]?;
@@ -787,12 +938,12 @@ fn get_input<'inner, 'outer, InputSpec, Ctx, C>(
         &'outer [ParamValue],
     ),
     spec: AnyInputSpec,
-) -> Option<impl ExactSizeIterator<Item = Value> + Send + 'outer>
+) -> Option<impl ValueIter + Send + 'outer>
 where
     InputSpec: Specifier,
-    C: ComponentSetOut<Value>,
+    C: ComponentSetOut,
     C::OutputIter: 'outer,
-    Ctx: GetInput<InputSpec, Value>,
+    Ctx: GetInput<InputSpec>,
 {
     let wire = wires[spec.0]?;
 
@@ -818,9 +969,9 @@ fn get_param<'inner, 'outer, InputSpec, Ctx, C>(
 ) -> Value
 where
     InputSpec: Specifier,
-    C: ComponentSetOut<Value>,
+    C: ComponentSetOut,
     C::OutputIter: 'outer,
-    Ctx: GetInput<InputSpec, Value>,
+    Ctx: GetInput<InputSpec>,
 {
     use fixed::FixedU32;
 
@@ -841,6 +992,7 @@ where
             .map(|outputs| (value, outputs))
         })
         .map(|(wire_value, outputs)| {
+            let outputs = outputs.analog().unwrap();
             let wire_value = s_to_u(*wire_value);
             let len = outputs.len() as u32;
             let average_output_this_tick: UCont = outputs.map(|o| s_to_u(o) / len).sum();
@@ -859,12 +1011,12 @@ where
 
 impl<C, InputSpec> RackSlice<&'_ mut [TaggedComponent<C>], InputSpec>
 where
-    C: ComponentSetOut<Value>,
+    C: ComponentSetOut,
     InputSpec: Specifier,
 {
     fn update<Ctx>(&mut self, ctx: SimpleCow<'_, Ctx>)
     where
-        Ctx: GetInput<InputSpec, Value>,
+        Ctx: GetInput<InputSpec>,
     {
         for index in (0..self.components.len()).rev() {
             let (rest, this) = self.components.split_at_mut(index);
@@ -918,16 +1070,16 @@ impl<'a, C> From<&'a C> for SimpleCow<'a, C> {
 
 impl<C, InputSpec> RackSlice<&'_ [TaggedComponent<C>], InputSpec>
 where
-    C: ComponentSetOut<Value>,
+    C: ComponentSetOut,
     InputSpec: Specifier,
 {
     fn output<Ctx>(
         &self,
         Wire(wire): Wire<marker::Output>,
         ctx: &Ctx,
-    ) -> Option<impl ExactSizeIterator<Item = Value> + Send>
+    ) -> Option<impl ValueIter + Send>
     where
-        Ctx: GetInput<InputSpec, Value>,
+        Ctx: GetInput<InputSpec>,
     {
         match wire.element() {
             ElementSpecifier::Component { id, index } => {

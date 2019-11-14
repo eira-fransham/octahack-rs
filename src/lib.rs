@@ -7,7 +7,7 @@ pub mod octahack_components;
 pub mod output;
 
 pub use component::{
-    AnyInputSpec, AnyOutputSpec, AnyParamSpec, Component, ComponentId, ComponentSet,
+    AnyInputSpec, AnyIter, AnyOutputSpec, AnyParamSpec, Component, ComponentId, ComponentSet,
     ComponentSetOut, Context, GetInput, GetOutput, GetParam, Param, QuickContext, Rack, SpecId,
-    Specifier, Types, Value, ValueKind, ValueType, Wire, WireDst, WireSrc,
+    Specifier, Types, Value, ValueIter, ValueKind, ValueType, Wire, WireDst, WireSrc,
 };
