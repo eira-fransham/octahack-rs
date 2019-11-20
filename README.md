@@ -1,8 +1,8 @@
 # Octahack
 
-An embeddable, precise and efficient modular music (or anything else you want) system. As the WIP name implies, it's heavily inspired by Elektron's Octatrack, a ridiculously efficient hardware sampler/music workstation. This library is designed quite differently, however. Essentially it's a digital modular rack, but designed to be usable in a performance setting. The north star for this is to be efficient enough for a performer to be able to start from a completely blank slate and play an entire live set.
+An embeddable, precise and efficient modular music (or anything else you want) system. As the WIP name implies, it's heavily inspired by Elektron's Octatrack, a ridiculously efficient hardware sampler/music workstation. This library is designed quite differently, however. Essentially it's a digital modular rack, but designed to be usable in a performance setting. If I had to describe it in a single sentence I'd say that it's basically somewhere between Vim-for-PureData livecoding environment and an Elektron hardware instrument. The north star for this is to be efficient enough for a performer to be able to start from a completely blank slate and play an entire live set.
 
-It's designed to be compiled as an OS for a Raspberry Pi-based piece of performance hardware, and as that side of it progresses I'll add updates to the readme. If I had to describe it in a single sentence I'd say that it's basically somewhere between a PureData livecoding environment and an Elektron hardware instrument.
+It's designed to be compiled as an OS for a Raspberry Pi-based piece of performance hardware, and as that side of it progresses I'll add updates to the readme.
 
 This readme is basically just a way for me to get all my thoughts out and organised, so it might get out-of-date as the project evolves, but it will give a pretty decent overview of what I'm aiming for here.
 
