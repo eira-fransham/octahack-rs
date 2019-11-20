@@ -61,8 +61,6 @@ impl Component for Amplifier {
                             .unwrap()
                             .map(|i| i.cast())
                             .map(|to_multiply: f32| {
-                                // TODO: Return `Result<Option<Value>, SomeError>` so we can differentiate between
-                                //       "no value" and "an error happened"
                                 let multiplication_factor: f32 =
                                     fixed::FixedU32::<typenum::consts::U32>::from_num(
                                         ctx.param(id),
