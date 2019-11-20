@@ -7,15 +7,15 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-fixed = { version = "0.4", features = ["az"] }
-typenum = "1.11"
-generic-array = { git = "https://github.com/Vurich/generic-array", features = ["arrayvec"] }
-hlist = "0.1"
 arrayvec = "0.5"
-rodio = "0.9"
+az = "0.3"
 cpal = "0.8"
 crossbeam-channel = "0.3"
-az = "0.3"
-nom-midi = "0.5"
-itertools = "0.8"
+fixed = { version = "0.4", features = ["az"] }
 fxhash = "0.2"
+generic-array = { git = "https://github.com/Vurich/generic-array", features = ["arrayvec"] }
+hlist = "0.1"
+itertools = "0.8"
+nom-midi = "0.5"
+rodio = "0.9"
+typenum = "1.11"

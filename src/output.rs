@@ -1,7 +1,7 @@
 use crate::{
-    AnyIter, ComponentSetOut, QuickContext, Rack, SpecId, Specifier, ValueIter, ValueKind,
+    AnyComponent, AnyIter, QuickContext, Rack, SpecId, Specifier, Value, ValueIter, ValueKind,
 };
-use fixed::types::{I0F16, I0F32};
+use fixed::types::I1F15;
 use rodio::Source;
 
 fn num_audio_channels<Spec>() -> u8
@@ -135,7 +135,7 @@ where
 impl<'a, S, C, InputSpec, OutputSpec> AudioStreamer<'a, S, C, InputSpec, OutputSpec>
 where
     S: Source + Iterator<Item = i16> + 'a,
-    C: ComponentSetOut + 'static,
+    C: AnyComponent + 'static,
     InputSpec: Specifier,
     OutputSpec: Specifier,
 {
@@ -158,7 +158,7 @@ where
                                 ..(id + InputSpec::TYPES[input.id()].channels.unwrap()) as usize],
                         )
                         .into_iter()
-                        .map(|val| I0F32::from_num(I0F16::from_bits(val))),
+                        .map(|val| Value::from_num(I1F15::from_bits(val))),
                     ))
                 })
             };
@@ -212,7 +212,7 @@ where
                         .map(|val| {
                             val.analog()
                                 .unwrap()
-                                .map(|val| I0F16::from_num(val).to_bits())
+                                .map(|val| I1F15::from_num(val).to_bits())
                         }),
                     min_len: OutputSpec::from_id(new_id).value_type().channels.unwrap() as usize,
                 });
@@ -226,7 +226,7 @@ where
 impl<'a, S, C, InputSpec, OutputSpec> Iterator for AudioStreamer<'a, S, C, InputSpec, OutputSpec>
 where
     S: Source + Iterator<Item = i16> + 'a,
-    C: ComponentSetOut + 'static,
+    C: AnyComponent + 'static,
     InputSpec: Specifier,
     OutputSpec: Specifier,
 {
@@ -250,7 +250,7 @@ impl<'a, S, C, InputSpec, OutputSpec> rodio::Source
     for AudioStreamer<'a, S, C, InputSpec, OutputSpec>
 where
     S: Source + Iterator<Item = i16> + 'a,
-    C: ComponentSetOut + 'static,
+    C: AnyComponent + 'static,
     InputSpec: Specifier,
     OutputSpec: Specifier,
 {

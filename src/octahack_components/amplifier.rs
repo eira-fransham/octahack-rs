@@ -1,7 +1,8 @@
 use crate::{
-    AnyIter, Component, GetInput, GetParam, Param, SpecId, Specifier, Value, ValueIter, ValueType,
+    AnyIter, Component, GetInput, GetParam, Param, SpecId, Specifier, Value, ValueExt, ValueIter,
+    ValueType,
 };
-use fixed::types::I0F32;
+use az::Az;
 
 #[derive(Copy, Clone)]
 pub struct AmplifierIO(pub u8);
@@ -33,7 +34,7 @@ impl Specifier for AmplifierIO {
 
 impl Param for AmplifierIO {
     fn default(&self) -> Value {
-        I0F32::default()
+        Value::default()
     }
 }
 
@@ -50,7 +51,7 @@ impl Component for Amplifier {
     where
         Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
     {
-        use az::Cast;
+        
 
         AnyIter::from(
             ctx.input(id)
@@ -59,16 +60,9 @@ impl Component for Amplifier {
                         inputs
                             .analog()
                             .unwrap()
-                            .map(|i| i.cast())
-                            .map(|to_multiply: f32| {
-                                let multiplication_factor: f32 =
-                                    fixed::FixedU32::<typenum::consts::U32>::from_num(
-                                        ctx.param(id),
-                                    )
-                                    .cast();
-
+                            .map(|to_multiply| {
                                 Value::saturating_from_num(
-                                    to_multiply * 2. * (multiplication_factor + 0.5),
+                                    to_multiply.az::<f32>() * ctx.param(id).to_u().az::<f32>(),
                                 )
                             })
                             .collect::<Vec<_>>()

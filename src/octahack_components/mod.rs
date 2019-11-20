@@ -1,4 +1,4 @@
-use fixed::types::I0F32;
+use crate::Value;
 
 pub mod amplifier;
 pub mod sine_synth;
@@ -15,15 +15,16 @@ crate::component_set! {
 
 pub use self::octahack_component::Component as OctahackComponent;
 
-pub const VOLT: I0F32 = I0F32::from_bits(0x28f5c29);
+/// Equals `0.02`, which is a convenient number for us.
+pub const VOLT: Value = Value::from_bits(0x28f5c29);
 
 #[cfg(test)]
 mod test {
     use crate::{
-        octahack_components::amplifier::AmplifierIO, AnyIter, ComponentSet, QuickContext, Rack,
+        octahack_components::amplifier::AmplifierIO, AnyComponent, AnyIter, QuickContext, Rack,
         SpecId, Specifier, Value, ValueIter, ValueType, WireDst, WireSrc,
     };
-    use fixed::types::I0F32;
+    
 
     #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
     struct OneChannel;
@@ -66,7 +67,7 @@ mod test {
 
         let context = QuickContext::input(|_: &(), i| {
             Some(match i {
-                OneChannel => AnyIter::from(std::iter::once(I0F32::max_value())),
+                OneChannel => AnyIter::from(std::iter::once(Value::max_value())),
             })
         });
 
@@ -74,7 +75,7 @@ mod test {
         assert_eq!(
             rack.output(OneChannel, context)
                 .map(|i| i.analog().unwrap().collect::<Vec<_>>()),
-            Some(vec![I0F32::max_value()])
+            Some(vec![Value::max_value()])
         );
     }
 
