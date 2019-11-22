@@ -139,7 +139,7 @@ macro_rules! specs {
         $v mod $modname {
             use $crate::derive_more::TryInto;
 
-            use std::convert::TryFrom;
+            
 
             #[derive(Copy, Clone, PartialEq, Eq)]
             pub enum Specifier {

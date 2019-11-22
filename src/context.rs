@@ -1,5 +1,5 @@
 use crate::{Value, ValueIter};
-use rodio::{Sample, Source};
+
 use std::marker::PhantomData;
 
 pub struct QuickContext<C, InputFn, ParamFn> {

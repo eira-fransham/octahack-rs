@@ -236,10 +236,6 @@ where
         &self.indices
     }
 
-    fn ids_mut(&mut self) -> &mut [ComponentId] {
-        &mut self.indices
-    }
-
     fn len(&self) -> usize {
         self.indices.len()
     }
@@ -367,8 +363,6 @@ where
     )
     where <<<C as AnyComponent>::ParamStorage as crate::params::ParamStorage<'a>>::RefsMut as Iterator>::Item: crate::params::Possibly<&'a mut V>
     {
-        use crate::params::{ParamStorage, Possibly};
-
         let v = self.components[component]
             .params
             .refs_mut()

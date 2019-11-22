@@ -57,7 +57,7 @@ mod test {
 
         let context = QuickContext::input(|_: &(), i| {
             Some(match i {
-                OneChannel => AnyIter::from(std::iter::once(Value::max_value())),
+                Specifier::OneChannel => AnyIter::from(std::iter::once(Value::max_value())),
             })
         });
 
