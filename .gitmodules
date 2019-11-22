@@ -1,0 +1,3 @@
+[submodule "derive_more"]
+	path = derive_more
+	url = git@github.com:Vurich/derive_more.git

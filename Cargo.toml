@@ -11,6 +11,7 @@ arrayvec = "0.5"
 az = "0.3"
 cpal = "0.8"
 crossbeam-channel = "0.3"
+derive_more = { path = "./derive_more" }
 fixed = { version = "0.4", features = ["az"] }
 fxhash = "0.2"
 generic-array = { git = "https://github.com/Vurich/generic-array", features = ["arrayvec"] }

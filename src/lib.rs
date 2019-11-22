@@ -1,20 +1,27 @@
-#![feature(type_alias_impl_trait, never_type)]
+#![feature(
+    type_alias_impl_trait,
+    never_type,
+    specialization,
+)]
 
 // TODO: Remove all uses of `Vec`
 
 use fixed::types::{I1F31, U1F31};
 
+pub use derive_more;
+
 pub mod components;
 pub mod context;
 pub mod octahack_components;
 pub mod output;
+pub mod params;
 pub mod rack;
 
 pub use components::{
-    AnyComponent, AnyInputSpec, AnyIter, AnyOutputSpec, AnyParamSpec, Component, Param, SpecId,
-    Specifier, Types, ValueIter,
+    AnyComponent, AnyInputSpec, AnyIter, AnyOutputSpec, AnyParamSpec, Component, GetOutput, SpecId,
+    RuntimeSpecifier, Types, ValueIter,
 };
-pub use context::{Context, GetInput, GetParam, QuickContext};
+pub use context::{GetInput, GetParam, QuickContext};
 pub use rack::{ComponentId, Rack, Wire, WireDst, WireSrc};
 
 fn u_to_s(unsigned: U1F31) -> I1F31 {

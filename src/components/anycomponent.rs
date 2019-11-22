@@ -1,4 +1,8 @@
-use crate::{GetInput, GetParam, SpecId, Value, ValueIter, ValueType};
+use crate::{
+    params::{GenericStorage, ParamStorage},
+    rack::{InternalParamWire, InternalWire},
+    GetInput, GetParam, SpecId, ValueIter, ValueType,
+};
 
 #[macro_export]
 macro_rules! component_set {
@@ -11,14 +15,129 @@ macro_rules! component_set {
                 $($t(super::$t)),*
             }
 
-            pub enum Input {
-                $($t(<super::$t as $crate::Component>::InputSpecifier)),*
+            pub enum GenericStorage<T>
+            where
+            $(
+                <super::$t as $crate::Component>::ParamSpecifier: $crate::params::GenericSpecifier<T>
+            ),*
+            {
+                $($t(<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::GenericSpecifier<T>>::Storage)),*
             }
-            pub enum Output {
-                $($t(<super::$t as $crate::Component>::OutputSpecifier)),*
+
+            impl<'a, T: Default + 'a> $crate::params::GenericStorage<'a, T> for GenericStorage<T>
+            where
+            $(
+                <super::$t as $crate::Component>::ParamSpecifier: $crate::params::GenericSpecifier<T>
+            ),*
+            {
+                type Refs = RefsGeneric<'a, T>;
+                type RefsMut = RefsMutGeneric<'a, T>;
+
+                fn refs(&'a self) -> Self::Refs {
+                    match self { $( Self::$t(val) => RefsGeneric::$t(val.refs()), )* }
+                }
+
+                fn refs_mut(&'a mut self) -> Self::RefsMut {
+                    match self { $( Self::$t(val) => RefsMutGeneric::$t(val.refs_mut()), )* }
+                }
             }
-            pub enum Param {
-                $($t(<super::$t as $crate::Component>::ParamSpecifier)),*
+
+            pub enum RefsGeneric<'a, T>
+            where
+            $(
+                <super::$t as $crate::Component>::ParamSpecifier: $crate::params::GenericSpecifier<T>
+            ),*
+            {
+                $($t(<<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::GenericSpecifier<T>>::Storage as $crate::params::GenericStorage<'a, T>>::Refs)),*
+            }
+
+            pub enum RefsMutGeneric<'a, T>
+            where
+            $(
+                <super::$t as $crate::Component>::ParamSpecifier: $crate::params::GenericSpecifier<T>
+            ),*
+            {
+                $($t(<<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::GenericSpecifier<T>>::Storage as $crate::params::GenericStorage<'a, T>>::RefsMut)),*
+            }
+
+            impl<'a, T: Default + 'a> Iterator for RefsGeneric<'a, T> {
+                type Item = &'a T;
+
+                fn next(&mut self) -> Option<Self::Item> {
+                    match self { $( Self::$t(val) => val.next(), )* }
+                }
+            }
+
+            impl<'a, T: Default + 'a> Iterator for RefsMutGeneric<'a, T> {
+                type Item = &'a mut T;
+
+                fn next(&mut self) -> Option<Self::Item> {
+                    match self { $( Self::$t(val) => val.next(), )* }
+                }
+            }
+
+            pub enum ParamStorage {
+                $($t(<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::Specifier>::ParamStorage)),*
+            }
+
+            impl<'a> $crate::params::ParamStorage<'a> for ParamStorage {
+                type Refs = Refs<'a>;
+                type RefsMut = RefsMut<'a>;
+
+                fn refs(&'a self) -> Self::Refs {
+                    match self { $( Self::$t(val) => Refs::$t(val.refs()), )* }
+                }
+                fn refs_mut(&'a mut self) -> Self::RefsMut {
+                    match self { $( Self::$t(val) => RefsMut::$t(val.refs_mut()), )* }
+                }
+            }
+
+            pub enum Refs<'a> {
+                $($t(<<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::Specifier>::ParamStorage as $crate::params::ParamStorage<'a>>::Refs)),*
+            }
+
+            pub enum RefsMut<'a> {
+                $($t(<<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::Specifier>::ParamStorage as $crate::params::ParamStorage<'a>>::RefsMut)),*
+            }
+
+            impl<'a> Iterator for Refs<'a> {
+                type Item = Ref<'a>;
+
+                fn next(&mut self) -> Option<Ref<'a>> {
+                    match self { $( Self::$t(val) => val.next().map(Ref::$t), )* }
+                }
+            }
+
+            impl<'a> Iterator for RefsMut<'a> {
+                type Item = RefMut<'a>;
+
+                fn next(&mut self) -> Option<RefMut<'a>> {
+                    match self { $( Self::$t(val) => val.next().map(RefMut::$t), )* }
+                }
+            }
+
+            pub enum Ref<'a> {
+                $($t(<<<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::Specifier>::ParamStorage as $crate::params::ParamStorage<'a>>::Refs as Iterator>::Item)),*
+            }
+
+            pub enum RefMut<'a> {
+                $($t(<<<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::Specifier>::ParamStorage as $crate::params::ParamStorage<'a>>::RefsMut as Iterator>::Item)),*
+            }
+
+            impl<'a> std::convert::TryFrom<Ref<'a>> for &'a $crate::Value {
+                type Error = ((), Ref<'a>);
+
+                fn try_from(other: Ref<'a>) -> Result<Self, Self::Error> {
+                    match other { $( Ref::$t(val) => { <&'a $crate::Value>::try_from(val).map_err(|(_, v)| ((), Ref::$t(v))) }, )* }
+                }
+            }
+
+            impl<'a> std::convert::TryFrom<RefMut<'a>> for &'a mut $crate::Value {
+                type Error = ((), RefMut<'a>);
+
+                fn try_from(other: RefMut<'a>) -> Result<Self, Self::Error> {
+                    match other { $( RefMut::$t(val) => { <&'a mut $crate::Value>::try_from(val).map_err(|(_, v)| ((), RefMut::$t(v))) }, )* }
+                }
             }
 
             pub enum Iter<$($t),*> {
@@ -88,71 +207,7 @@ macro_rules! component_set {
                         Component::$t(other)
                     }
                 }
-
-                #[allow(unreachable_code)]
-                impl From<<super::$t as $crate::Component>::InputSpecifier> for Input {
-                    fn from(other: <super::$t as $crate::Component>::InputSpecifier) -> Self {
-                        Self::$t(other)
-                    }
-                }
-
-                #[allow(unreachable_code)]
-                impl From<<super::$t as $crate::Component>::OutputSpecifier> for Output {
-                    fn from(other: <super::$t as $crate::Component>::OutputSpecifier) -> Self {
-                        Self::$t(other)
-                    }
-                }
-
-                #[allow(unreachable_code)]
-                impl From<<super::$t as $crate::Component>::ParamSpecifier> for Param {
-                    fn from(other: <super::$t as $crate::Component>::ParamSpecifier) -> Self {
-                        Self::$t(other)
-                    }
-                }
             )*
-
-            enum ParamDefaultsInner {
-                $($t(&'static [<super::$t as $crate::Component>::ParamSpecifier])),*
-            }
-
-            pub struct ParamDefaults {
-                inner: ParamDefaultsInner,
-            }
-
-            impl Iterator for ParamDefaults
-            where
-            $(
-                <super::$t as $crate::Component>::ParamSpecifier: $crate::Param
-            ),*
-            {
-                type Item = $crate::Value;
-
-                fn next(&mut self) -> Option<Self::Item> {
-                    match &mut self.inner {
-                        $(
-                            ParamDefaultsInner::$t(inner) => {
-                                let (first, rest) = inner.split_first()?;
-
-                                *inner = rest;
-
-                                Some($crate::Param::default(first))
-                            },
-                        )*
-                    }
-                }
-            }
-
-            impl ExactSizeIterator for ParamDefaults {
-                fn len(&self) -> usize {
-                    match &self.inner {
-                        $(
-                            ParamDefaultsInner::$t(inner) => {
-                                inner.len()
-                            },
-                        )*
-                    }
-                }
-            }
 
             impl $crate::AnyComponent for Component
             where $( super::$t: $crate::Component ),*
@@ -165,7 +220,7 @@ macro_rules! component_set {
                             let count = {
                                 <
                                     <super::$t as $crate::Component>::OutputSpecifier as
-                                        $crate::Specifier
+                                        $crate::RuntimeSpecifier
                                 >::VALUES.len()
                             };
                             // `0xFFFFFFFF` if count > out, 0 otherwise
@@ -178,7 +233,9 @@ macro_rules! component_set {
                     out
                 };
 
-                type ParamDefaults = ParamDefaults;
+                type ParamStorage = ParamStorage;
+                type InputWireStorage = GenericStorage<$crate::rack::InternalWire>;
+                type ParamWireStorage = GenericStorage<$crate::rack::InternalParamWire>;
                 type OutputIter = ValueIter<$(<super::$t as $crate::Component>::OutputIter),*>;
 
                 fn types(&self) -> $crate::Types {
@@ -186,28 +243,35 @@ macro_rules! component_set {
                         $(
                             Self::$t(_) => {
                                 $crate::Types {
-                                input: <<super::$t as $crate::Component>::InputSpecifier as $crate::Specifier>::TYPES,
-                                output: <<super::$t as $crate::Component>::OutputSpecifier as $crate::Specifier>::TYPES,
-                                parameters:<<super::$t as $crate::Component>::ParamSpecifier as $crate::Specifier>::TYPES,
+                                input: <<super::$t as $crate::Component>::InputSpecifier as $crate::RuntimeSpecifier>::TYPES,
+                                output: <<super::$t as $crate::Component>::OutputSpecifier as $crate::RuntimeSpecifier>::TYPES,
+                                parameters:<<super::$t as $crate::Component>::ParamSpecifier as $crate::RuntimeSpecifier>::TYPES,
                                 }
                             },
                         )*
                     }
                 }
 
-                fn param_defaults(&self) -> Self::ParamDefaults {
+                fn param_default(&self) -> Self::ParamStorage {
                     match self {
                         $(
-                            Self::$t(_) => {
-                                ParamDefaults {
-                                    inner: ParamDefaultsInner::$t(
-                                        <
-                                            <super::$t as $crate::Component>::OutputSpecifier as
-                                                $crate::Specifier
-                                        >::VALUES
-                                    )
-                                }
-                            },
+                            Self::$t(_) => ParamStorage::$t(Default::default()),
+                        )*
+                    }
+                }
+
+                fn input_wires_default(&self) -> Self::InputWireStorage {
+                    match self {
+                        $(
+                            Self::$t(_) => Self::InputWireStorage::$t(Default::default()),
+                        )*
+                    }
+                }
+
+                fn param_wires_default(&self) -> Self::ParamWireStorage {
+                    match self {
+                        $(
+                            Self::$t(_) => Self::ParamWireStorage::$t(Default::default()),
                         )*
                     }
                 }
@@ -220,7 +284,7 @@ macro_rules! component_set {
                     match self {
                         $(
                             Self::$t(val) => {
-                                use $crate::Specifier;
+                                use $crate::RuntimeSpecifier;
 
                                 Self::$t(val.update(
                                     $crate::QuickContext::new(
@@ -244,10 +308,10 @@ macro_rules! component_set {
                     match self {
                         $(
                             Self::$t(val) => {
-                                use $crate::Specifier;
+                                use $crate::{RuntimeSpecifier, params::Output};
 
-                                ValueIter::$t(val.output(
-                                    <<super::$t as $crate::Component>::OutputSpecifier as $crate::Specifier>::from_id(id.0),
+                                ValueIter::$t(<<super::$t as $crate::Component>::OutputSpecifier as $crate::RuntimeSpecifier>::from_id(id.0).get_output(
+                                    val,
                                     $crate::QuickContext::new(
                                         ctx,
                                         |ctx: &Ctx, spec: <super::$t as $crate::Component>::InputSpecifier| {
@@ -278,12 +342,16 @@ pub struct Types {
 pub trait AnyComponent {
     const MAX_OUTPUT_COUNT: usize;
 
-    type ParamDefaults: ExactSizeIterator<Item = Value> + Send;
+    type ParamStorage: for<'a> ParamStorage<'a>;
+    type InputWireStorage: for<'a> GenericStorage<'a, InternalWire>;
+    type ParamWireStorage: for<'a> GenericStorage<'a, InternalParamWire>;
     type OutputIter: ValueIter + Send;
 
     fn types(&self) -> Types;
 
-    fn param_defaults(&self) -> Self::ParamDefaults;
+    fn param_default(&self) -> Self::ParamStorage;
+    fn input_wires_default(&self) -> Self::InputWireStorage;
+    fn param_wires_default(&self) -> Self::ParamWireStorage;
 
     // TODO: Support MIDI
     fn update<Ctx>(&self, ctx: Ctx) -> Self

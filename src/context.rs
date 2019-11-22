@@ -1,4 +1,6 @@
 use crate::{Value, ValueIter};
+use rodio::{Sample, Source};
+use std::marker::PhantomData;
 
 pub struct QuickContext<C, InputFn, ParamFn> {
     ctx: C,
@@ -64,9 +66,21 @@ where
     }
 }
 
-pub trait Context<ISpec, PSpec>: GetInput<ISpec> + GetParam<PSpec> {
+pub trait ContextMeta {
     /// Samples per second
     fn samples(&self) -> usize;
+}
+
+pub struct FileId<Kind> {
+    index: usize,
+    _marker: PhantomData<Kind>,
+}
+
+pub trait FileAccess<Kind> {
+    type ReadFile;
+
+    // Will always read the file from the start
+    fn read(&self, id: FileId<Kind>) -> Option<Self::ReadFile>;
 }
 
 pub trait GetInput<Spec> {

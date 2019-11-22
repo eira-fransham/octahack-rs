@@ -1,33 +1,23 @@
-use crate::{
-    AnyIter, Component, GetInput, GetParam, Param, SpecId, Specifier, Value, ValueIter, ValueType,
-};
+use crate::{AnyIter, Component, GetInput, GetOutput, GetParam, Value, ValueIter};
 
 // TODO: This should be in the context
 const FREQUENCY: usize = 44100;
 
-#[derive(Copy, Clone)]
-pub struct SynthIO;
-
-impl Specifier for SynthIO {
-    const VALUES: &'static [Self] = &[SynthIO];
-    const TYPES: &'static [ValueType] = &[ValueType::continuous()];
-
-    fn id(&self) -> SpecId {
-        0
-    }
-
-    fn from_id(id: SpecId) -> Self {
-        assert_eq!(id, 0);
-        SynthIO
+crate::specs! {
+    mod synth {
+        IO: Value
     }
 }
 
-impl Param for SynthIO {
-    fn default(&self) -> Value {
-        freq(440)
+pub use self::synth::Specifier;
+
+impl Default for self::synth::Params {
+    fn default() -> Self {
+        self::synth::Params { IO: freq(440) }
     }
 }
 
+#[derive(Default)]
 // TODO: Make the wave configurable
 pub struct SineSynth {
     tick: f64,
@@ -35,7 +25,7 @@ pub struct SineSynth {
 
 impl SineSynth {
     pub fn new() -> Self {
-        SineSynth { tick: 0. }
+        Self::default()
     }
 }
 
@@ -51,23 +41,27 @@ pub fn freq(freq: impl Into<f64>) -> Value {
     Value::saturating_from_num((freq / 440.).log2() * f64::from(super::VOLT))
 }
 
+type Iter = impl ValueIter + Send;
+
 impl Component for SineSynth {
     type InputSpecifier = !;
-    type OutputSpecifier = SynthIO;
-    type ParamSpecifier = SynthIO;
-    type OutputIter = impl ValueIter + Send;
+    type OutputSpecifier = Specifier;
+    type ParamSpecifier = Specifier;
+    type OutputIter = Iter;
 
     fn update<Ctx>(&self, ctx: Ctx) -> Self
     where
         Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
     {
-        let freq = volt_to_octave(ctx.param(SynthIO));
+        let freq = volt_to_octave(ctx.param(Specifier::IO));
         SineSynth {
             tick: self.tick + freq / FREQUENCY as f64,
         }
     }
+}
 
-    fn output<Ctx>(&self, _: Self::OutputSpecifier, _: Ctx) -> Self::OutputIter
+impl GetOutput<self::synth::IO> for SineSynth {
+    fn output<Ctx>(&self, _: Ctx) -> Iter
     where
         Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
     {

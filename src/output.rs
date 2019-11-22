@@ -1,12 +1,15 @@
 use crate::{
-    AnyComponent, AnyIter, QuickContext, Rack, SpecId, Specifier, Value, ValueIter, ValueKind,
+    params::{GenericSpecifier, ParamStorage, Possibly},
+    rack::InternalWire,
+    AnyComponent, AnyIter, QuickContext, Rack, RuntimeSpecifier, SpecId, Value, ValueIter,
+    ValueKind,
 };
 use fixed::types::I1F15;
 use rodio::Source;
 
 fn num_audio_channels<Spec>() -> u8
 where
-    Spec: Specifier,
+    Spec: RuntimeSpecifier,
 {
     let mut out = 0;
 
@@ -60,7 +63,11 @@ where
     }
 }
 
-pub struct AudioStreamer<'a, S, C, InputSpec, OutputSpec> {
+pub struct AudioStreamer<'a, S, C, InputSpec, OutputSpec>
+where
+    C: AnyComponent,
+    OutputSpec: GenericSpecifier<InternalWire>,
+{
     output_id: SpecId,
     out_iter: Option<Box<dyn Iterator<Item = i16> + Send + 'a>>,
     sample_rate: u32,
@@ -71,8 +78,9 @@ pub struct AudioStreamer<'a, S, C, InputSpec, OutputSpec> {
 impl<'a, S, C, InputSpec, OutputSpec>
     AudioStreamer<'a, rodio::source::UniformSourceIterator<S, i16>, C, InputSpec, OutputSpec>
 where
-    InputSpec: Specifier,
-    OutputSpec: Specifier,
+    C: AnyComponent,
+    InputSpec: RuntimeSpecifier,
+    OutputSpec: RuntimeSpecifier + GenericSpecifier<InternalWire>,
     S: Source + Iterator + 'a,
     S::Item: rodio::Sample,
 {
@@ -98,9 +106,10 @@ const DEFAULT_SAMPLE_RATE: u32 = 44100;
 
 impl<'a, S, C, InputSpec, OutputSpec> AudioStreamer<'a, S, C, InputSpec, OutputSpec>
 where
+    C: AnyComponent,
     S: Source + Iterator<Item = i16> + 'a,
-    InputSpec: Specifier,
-    OutputSpec: Specifier,
+    InputSpec: RuntimeSpecifier,
+    OutputSpec: RuntimeSpecifier + GenericSpecifier<InternalWire>,
 {
     pub fn new_unchecked(
         sample_rate: impl Into<Option<u32>>,
@@ -136,8 +145,10 @@ impl<'a, S, C, InputSpec, OutputSpec> AudioStreamer<'a, S, C, InputSpec, OutputS
 where
     S: Source + Iterator<Item = i16> + 'a,
     C: AnyComponent + 'static,
-    InputSpec: Specifier,
-    OutputSpec: Specifier,
+    for<'any> <<<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Refs as Iterator>::Item:
+        Possibly<&'any Value>,
+    InputSpec: RuntimeSpecifier,
+    OutputSpec: RuntimeSpecifier + GenericSpecifier<InternalWire>,
 {
     fn update(&mut self) -> Option<impl Iterator<Item = i16> + ExactSizeIterator> {
         macro_rules! context {
@@ -227,8 +238,10 @@ impl<'a, S, C, InputSpec, OutputSpec> Iterator for AudioStreamer<'a, S, C, Input
 where
     S: Source + Iterator<Item = i16> + 'a,
     C: AnyComponent + 'static,
-    InputSpec: Specifier,
-    OutputSpec: Specifier,
+    for<'any> <<<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Refs as Iterator>::Item:
+        Possibly<&'any Value>,
+    InputSpec: RuntimeSpecifier,
+    OutputSpec: RuntimeSpecifier + GenericSpecifier<InternalWire>,
 {
     type Item = i16;
 
@@ -251,8 +264,10 @@ impl<'a, S, C, InputSpec, OutputSpec> rodio::Source
 where
     S: Source + Iterator<Item = i16> + 'a,
     C: AnyComponent + 'static,
-    InputSpec: Specifier,
-    OutputSpec: Specifier,
+    for<'any> <<<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Refs as Iterator>::Item:
+        Possibly<&'any Value>,
+    InputSpec: RuntimeSpecifier,
+    OutputSpec: RuntimeSpecifier + GenericSpecifier<InternalWire>,
 {
     fn current_frame_len(&self) -> Option<usize> {
         None

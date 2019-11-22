@@ -2,14 +2,14 @@ pub mod anycomponent;
 
 pub use anycomponent::{AnyComponent, AnyInputSpec, AnyOutputSpec, AnyParamSpec, Types};
 
-use crate::{GetInput, GetParam, Value, ValueType};
+use crate::{params::Specifier, GetInput, GetParam, Value, ValueType};
 use itertools::Either;
 use nom_midi::MidiEventType;
 
 // TODO: This can probably be `u8`
 pub type SpecId = usize;
 
-pub trait Specifier: Sized + Clone + 'static {
+pub trait RuntimeSpecifier: Sized + Clone + 'static {
     const VALUES: &'static [Self];
     // TODO: This should just be a stopgap until `const fn`s are more fleshed-out - at the
     //       moment it's not possible to define this as `VALUES.map(Self::typeof)`.
@@ -25,17 +25,13 @@ pub trait Specifier: Sized + Clone + 'static {
     }
 }
 
-impl Specifier for ! {
+impl RuntimeSpecifier for ! {
     const VALUES: &'static [Self] = &[];
     const TYPES: &'static [ValueType] = &[];
 
     fn id(&self) -> SpecId {
         unreachable!()
     }
-}
-
-pub trait Param: Specifier {
-    fn default(&self) -> Value;
 }
 
 pub trait Component: Sized {
@@ -45,11 +41,13 @@ pub trait Component: Sized {
     // TODO: Use GATs to allow adapators to be used internally.
     type OutputIter: ValueIter + Send;
 
-    fn output<Ctx>(&self, id: Self::OutputSpecifier, ctx: Ctx) -> Self::OutputIter
+    fn update<Ctx>(&self, _ctx: Ctx) -> Self
     where
         Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
+}
 
-    fn update<Ctx>(&self, _ctx: Ctx) -> Self
+pub trait GetOutput<RuntimeSpecifier>: Component {
+    fn output<Ctx>(&self, ctx: Ctx) -> Self::OutputIter
     where
         Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
 }
