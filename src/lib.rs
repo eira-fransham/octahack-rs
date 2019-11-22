@@ -1,8 +1,4 @@
-#![feature(
-    type_alias_impl_trait,
-    never_type,
-    specialization,
-)]
+#![feature(type_alias_impl_trait, never_type, specialization)]
 
 // TODO: Remove all uses of `Vec`
 
@@ -18,8 +14,8 @@ pub mod params;
 pub mod rack;
 
 pub use components::{
-    AnyComponent, AnyInputSpec, AnyIter, AnyOutputSpec, AnyParamSpec, Component, GetOutput, SpecId,
-    RuntimeSpecifier, Types, ValueIter,
+    AnyComponent, AnyInputSpec, AnyIter, AnyOutputSpec, AnyParamSpec, Component, GetOutput,
+    RuntimeSpecifier, SpecId, Types, ValueIter,
 };
 pub use context::{GetInput, GetParam, QuickContext};
 pub use rack::{ComponentId, Rack, Wire, WireDst, WireSrc};
@@ -36,6 +32,12 @@ fn s_to_u(signed: I1F31) -> U1F31 {
     U1F31::from_bits(
         (signed.to_bits() as u32).wrapping_add(I1F31::max_value().to_bits() as u32) as _,
     )
+}
+
+#[derive(Default)]
+pub struct Extra {
+    pub inputs: rack::InternalWire,
+    pub params: rack::InternalParamWire,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

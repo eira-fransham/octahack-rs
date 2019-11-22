@@ -21,13 +21,19 @@ pub const VOLT: Value = Value::from_bits(0x28f5c29);
 #[cfg(test)]
 mod test {
     use crate::{
-        AnyComponent, AnyIter, QuickContext, Rack, RuntimeSpecifier, SpecId, Value, ValueIter,
-        ValueType, WireDst, WireSrc,
+        AnyComponent, AnyIter, QuickContext, Rack, RuntimeSpecifier, Value, ValueIter, WireDst,
+        WireSrc,
     };
 
     crate::specs! {
         mod any {
             OneChannel: Value
+        }
+    }
+
+    impl Default for self::any::Params {
+        fn default() -> Self {
+            unimplemented!()
         }
     }
 

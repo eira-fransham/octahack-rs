@@ -1,5 +1,5 @@
 use crate::{
-    params::{GenericSpecifier, ParamStorage, Possibly},
+    params::{HasStorage, ParamStorage, Possibly},
     rack::InternalWire,
     AnyComponent, AnyIter, QuickContext, Rack, RuntimeSpecifier, SpecId, Value, ValueIter,
     ValueKind,
@@ -66,7 +66,7 @@ where
 pub struct AudioStreamer<'a, S, C, InputSpec, OutputSpec>
 where
     C: AnyComponent,
-    OutputSpec: GenericSpecifier<InternalWire>,
+    OutputSpec: HasStorage<InternalWire>,
 {
     output_id: SpecId,
     out_iter: Option<Box<dyn Iterator<Item = i16> + Send + 'a>>,
@@ -80,7 +80,7 @@ impl<'a, S, C, InputSpec, OutputSpec>
 where
     C: AnyComponent,
     InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + GenericSpecifier<InternalWire>,
+    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
     S: Source + Iterator + 'a,
     S::Item: rodio::Sample,
 {
@@ -109,7 +109,7 @@ where
     C: AnyComponent,
     S: Source + Iterator<Item = i16> + 'a,
     InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + GenericSpecifier<InternalWire>,
+    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
 {
     pub fn new_unchecked(
         sample_rate: impl Into<Option<u32>>,
@@ -145,10 +145,9 @@ impl<'a, S, C, InputSpec, OutputSpec> AudioStreamer<'a, S, C, InputSpec, OutputS
 where
     S: Source + Iterator<Item = i16> + 'a,
     C: AnyComponent + 'static,
-    for<'any> <<<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Refs as Iterator>::Item:
-        Possibly<&'any Value>,
+    for<'any> <<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Ref: Possibly<&'any Value>,
     InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + GenericSpecifier<InternalWire>,
+    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
 {
     fn update(&mut self) -> Option<impl Iterator<Item = i16> + ExactSizeIterator> {
         macro_rules! context {
@@ -238,10 +237,9 @@ impl<'a, S, C, InputSpec, OutputSpec> Iterator for AudioStreamer<'a, S, C, Input
 where
     S: Source + Iterator<Item = i16> + 'a,
     C: AnyComponent + 'static,
-    for<'any> <<<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Refs as Iterator>::Item:
-        Possibly<&'any Value>,
+    for<'any> <<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Ref: Possibly<&'any Value>,
     InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + GenericSpecifier<InternalWire>,
+    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
 {
     type Item = i16;
 
@@ -264,10 +262,9 @@ impl<'a, S, C, InputSpec, OutputSpec> rodio::Source
 where
     S: Source + Iterator<Item = i16> + 'a,
     C: AnyComponent + 'static,
-    for<'any> <<<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Refs as Iterator>::Item:
-        Possibly<&'any Value>,
+    for<'any> <<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Ref: Possibly<&'any Value>,
     InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + GenericSpecifier<InternalWire>,
+    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
 {
     fn current_frame_len(&self) -> Option<usize> {
         None

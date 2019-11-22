@@ -1,4 +1,7 @@
-use crate::{Value, ValueIter};
+use crate::{
+    params::{Key, HasParamStorage},
+    Extra, Value, ValueIter,
+};
 
 use std::marker::PhantomData;
 
@@ -37,15 +40,6 @@ where
     }
 }
 
-impl<C, InputFn, ParamFn, Spec> GetParam<Spec> for QuickContext<C, InputFn, ParamFn>
-where
-    ParamFn: Fn(&C, Spec) -> Value,
-{
-    fn param(&self, spec: Spec) -> Value {
-        (self.param_fn)(&self.ctx, spec)
-    }
-}
-
 impl<C, Spec> GetInput<Spec> for &'_ C
 where
     C: GetInput<Spec>,
@@ -54,15 +48,6 @@ where
 
     fn input(&self, spec: Spec) -> Option<Self::Iter> {
         C::input(*self, spec)
-    }
-}
-
-impl<C, Spec> GetParam<Spec> for &'_ C
-where
-    C: GetParam<Spec>,
-{
-    fn param(&self, spec: Spec) -> Value {
-        C::param(*self, spec)
     }
 }
 
@@ -90,6 +75,10 @@ pub trait GetInput<Spec> {
     fn input(&self, spec: Spec) -> Option<Self::Iter>;
 }
 
-pub trait GetParam<Spec> {
-    fn param(&self, spec: Spec) -> Value;
+pub trait GetParam<Spec, T: Key> {
+    fn param(&self) -> T::Value;
+}
+
+pub trait GetRuntimeParam<Spec> {
+    fn param(&self, spec: Spec) -> !;
 }

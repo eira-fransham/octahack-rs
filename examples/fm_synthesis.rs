@@ -12,6 +12,12 @@ octahack::specs! {
     }
 }
 
+impl Default for self::any::Params {
+    fn default() -> Self {
+        unimplemented!()
+    }
+}
+
 use self::any::Specifier;
 
 use rodio::Source;

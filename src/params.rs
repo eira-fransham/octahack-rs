@@ -70,67 +70,141 @@ pub trait Possibly<T>: Sized {
         F: FnOnce(T) -> O;
 }
 
-impl<'a, A, B, E> Possibly<A> for B
+trait PossiblyHelper<B> {
+    type Error;
+
+    fn to_tuple(self) -> (Self::Error, B);
+}
+
+impl<'a, A, B> Possibly<A> for B
 where
-    A: TryFrom<B, Error = (E, B)>,
+    A: TryFrom<B>,
+    A::Error: PossiblyHelper<B>,
 {
     fn when_matches<F, O>(self, f: F) -> Result<O, Self>
     where
         F: FnOnce(A) -> O,
     {
-        <A>::try_from(self).map(f).map_err(|(_, this)| this)
+        <A>::try_from(self)
+            .map(f)
+            .map_err(PossiblyHelper::to_tuple)
+            .map_err(|(_, this)| this)
+    }
+}
+
+impl<B, E> PossiblyHelper<B> for (E, B) {
+    type Error = E;
+
+    fn to_tuple(self) -> (Self::Error, B) {
+        self
+    }
+}
+
+impl<B> PossiblyHelper<B> for std::convert::Infallible {
+    type Error = !;
+
+    fn to_tuple(self) -> (Self::Error, B) {
+        unreachable!()
     }
 }
 
 pub trait ParamStorage<'a> {
-    type Refs: Iterator + 'a;
-    type RefsMut: Iterator + 'a;
+    type Ref;
+    type RefMut;
+    type Extra: 'a;
+    type Refs: Iterator<Item = (Self::Ref, &'a Self::Extra)> + 'a;
+    type RefsMut: Iterator<Item = (Self::RefMut, &'a mut Self::Extra)> + 'a;
 
     fn refs(&'a self) -> Self::Refs;
     fn refs_mut(&'a mut self) -> Self::RefsMut;
 }
 
-pub trait GenericStorage<'a, T: 'a> {
-    type Refs: Iterator<Item = &'a T> + 'a;
-    type RefsMut: Iterator<Item = &'a mut T> + 'a;
+pub trait Storage<'a> {
+    type Inner: 'a;
+
+    type Refs: Iterator<Item = &'a Self::Inner> + 'a;
+    type RefsMut: Iterator<Item = &'a mut Self::Inner> + 'a;
 
     fn refs(&'a self) -> Self::Refs;
     fn refs_mut(&'a mut self) -> Self::RefsMut;
 }
 
-pub trait WireStorage<'a>: Default {
-    type Refs: Iterator<Item = &'a Option<crate::rack::WireSrc>> + 'a;
-    type RefsMut: Iterator<Item = &'a Option<crate::rack::WireSrc>> + 'a;
-
-    fn refs(&'a self) -> Self::Refs;
-    fn refs_mut(&'a mut self) -> Self::RefsMut;
-}
-
-pub trait Output<C>
+pub trait Output<C, Spec>
 where
     C: crate::Component,
 {
-    fn get_output<Ctx>(self, comp: &C, ctx: Ctx) -> C::OutputIter
-    where
-        Ctx: crate::GetInput<C::InputSpecifier> + crate::GetParam<C::ParamSpecifier>;
+    fn get_output(self, comp: &C, spec: Spec) -> C::OutputIter;
 }
 
-pub trait Specifier {
-    type ParamStorage;
+pub trait Specifier {}
+
+pub trait HasStorage<T> {
+    type Storage: for<'a> Storage<'a, Inner = T>;
 }
 
-pub trait GenericSpecifier<T>: Specifier {
-    type Storage: for<'a> GenericStorage<'a, T>;
+pub trait HasParamStorage<T>: Specifier {
+    type Storage: for<'a> ParamStorage<'a, Extra = T>;
 }
 
-impl Specifier for ! {
-    type ParamStorage = ();
+impl Specifier for ! {}
+impl<T: 'static> HasParamStorage<T> for ! {
+    type Storage = EmptyStorage<T>;
+}
+impl<T: 'static> HasStorage<T> for ! {
+    type Storage = EmptyStorage<T>;
 }
 
-pub trait HasParam<V> {
+pub struct EmptyStorage<T> {
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T> Default for EmptyStorage<T> {
+    fn default() -> Self {
+        Self {
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a, T: 'a> ParamStorage<'a> for EmptyStorage<T> {
+    type Ref = !;
+    type RefMut = !;
+    type Extra = T;
+    type Refs = std::iter::Empty<(Self::Ref, &'a Self::Extra)>;
+    type RefsMut = std::iter::Empty<(Self::RefMut, &'a mut Self::Extra)>;
+
+    fn refs(&'a self) -> Self::Refs {
+        std::iter::empty()
+    }
+
+    fn refs_mut(&'a mut self) -> Self::RefsMut {
+        std::iter::empty()
+    }
+}
+
+impl<'a, V: 'a> Storage<'a> for EmptyStorage<V> {
+    type Inner = V;
+    type Refs = std::iter::Empty<&'a Self::Inner>;
+    type RefsMut = std::iter::Empty<&'a mut Self::Inner>;
+
+    fn refs(&'a self) -> Self::Refs {
+        std::iter::empty()
+    }
+
+    fn refs_mut(&'a mut self) -> Self::RefsMut {
+        std::iter::empty()
+    }
+}
+
+pub trait HasParamExtra<V> {
     type Output;
+    type Extra;
 
-    fn get(&self) -> &Self::Output;
+    fn get(&self) -> &(Self::Output, Self::Extra);
+}
+
+pub trait Key {
+    type Value;
 }
 
 #[macro_export]
@@ -139,31 +213,32 @@ macro_rules! specs {
         $v mod $modname {
             use $crate::derive_more::TryInto;
 
-            
-
             #[derive(Copy, Clone, PartialEq, Eq)]
             pub enum Specifier {
                 $( $key, )*
             }
 
-            impl $crate::params::Specifier for Specifier {
-                type ParamStorage = Params;
+            impl $crate::params::Specifier for Specifier {}
+
+            impl<T: 'static> $crate::params::HasParamStorage<T> for Specifier {
+                type Storage = ParamsWithExtra<T>;
             }
 
-            impl<T: Default + 'static> $crate::params::GenericSpecifier<T> for Specifier {
-                type Storage = GenericStorage<T>;
+            impl<T: 'static> $crate::params::HasStorage<T> for Specifier {
+                type Storage = Storage<T>;
             }
 
-            impl<C> $crate::params::Output<C> for Specifier
-            where $(C: $crate::components::GetOutput<$key>),*
+            impl<Ctx, C> $crate::params::Output<C, Specifier> for Ctx
+            where $(
+                C: $crate::components::GetOutput<Ctx, $key>,
+                Ctx: $crate::GetInput<C::InputSpecifier> + $crate::GetParam<C::ParamSpecifier, $key>,
+            )*
             {
-                fn get_output<Ctx>(self, comp: &C, ctx: Ctx) -> C::OutputIter
-                where
-                    Ctx: $crate::GetInput<C::InputSpecifier> + $crate::GetParam<C::ParamSpecifier>
+                fn get_output(self, comp: &C, spec: Specifier) -> C::OutputIter
                 {
-                    match self {
+                    match spec {
                         $(
-                            Self::$key => <C as $crate::components::GetOutput<$key>>::output(comp, ctx),
+                            Specifier::$key => <C as $crate::components::GetOutput<Ctx, $key>>::output(comp, self),
                         )*
                     }
                 }
@@ -177,28 +252,37 @@ macro_rules! specs {
                     $( (stringify!($key), $crate::ValueType::mono()).1 ),*
                 ];
 
+                #[allow(irrefutable_let_patterns, unused_assignments)]
                 fn id(&self) -> $crate::SpecId {
-                    for (i, val) in Self::VALUES.iter().enumerate() {
-                        if self == val { return i; }
-                    }
+                    let mut i = 0;
+                    $(
+                        if let Specifier::$key = self { return i; }
+                        i += 1;
+                    )*
 
                     unreachable!()
                 }
             }
 
-            $( pub enum $key {} )*
+            $(
+                pub enum $key {}
+                impl $crate::params::Key for $key {
+                    type Value = super::$value;
+                }
+            )*
 
-            #[allow(non_snake_case)]
             #[derive(Default)]
-            pub struct GenericStorage<T> {
+            #[allow(non_snake_case)]
+            pub struct Storage<V> {
                 $(
-                    pub $key : T,
+                    pub $key : V,
                 )*
             }
 
-            impl<'a, T: Default + 'a> $crate::params::GenericStorage<'a, T> for GenericStorage<T> {
-                type Refs = $crate::params::FixedSizeArrayIter<[&'a T; $( (stringify!($key), 1).1 + )*0]>;
-                type RefsMut = $crate::params::FixedSizeArrayIter<[&'a mut T; $( (stringify!($key), 1).1 + )*0]>;
+            impl<'a, V: 'a> $crate::params::Storage<'a> for Storage<V> {
+                type Inner = V;
+                type Refs = $crate::params::FixedSizeArrayIter<[&'a V; $( (stringify!($key), 1).1 + )*0]>;
+                type RefsMut = $crate::params::FixedSizeArrayIter<[&'a mut V; $( (stringify!($key), 1).1 + )*0]>;
 
                 fn refs(&'a self) -> Self::Refs {
                     $crate::params::FixedSizeArrayIter::new([
@@ -217,6 +301,12 @@ macro_rules! specs {
                 }
             }
 
+            #[allow(non_snake_case)]
+            pub struct ParamsWithExtra<T> {
+                $(
+                    pub $key : (super::$value, T),
+                )*
+            }
 
             #[allow(non_snake_case)]
             pub struct Params {
@@ -225,11 +315,24 @@ macro_rules! specs {
                 )*
             }
 
-            $(
-                impl $crate::params::HasParam<$key> for Params {
-                    type Output = super::$value;
+            const _: () = {
+                fn assert_params_implements_default() where Params: Default {}
+            };
 
-                    fn get(&self) -> &Self::Output {
+            impl<T: Default> Default for ParamsWithExtra<T> {
+                #[allow(non_snake_case)]
+                fn default() -> Self {
+                    let Params { $( $key ),* } = Params::default();
+                    ParamsWithExtra { $( $key: ($key, Default::default()) ),* }
+                }
+            }
+
+            $(
+                impl<T> $crate::params::HasParamExtra<$key> for ParamsWithExtra<T> {
+                    type Output = super::$value;
+                    type Extra = T;
+
+                    fn get(&self) -> &(Self::Output, Self::Extra) {
                         &self.$key
                     }
                 }
@@ -249,14 +352,17 @@ macro_rules! specs {
                 ),*
             }
 
-            impl<'a> $crate::params::ParamStorage<'a> for Params {
-                type Refs = $crate::params::FixedSizeArrayIter<[Ref<'a>; $( (stringify!($key), 1).1 + )*0]>;
-                type RefsMut = $crate::params::FixedSizeArrayIter<[RefMut<'a>; $( (stringify!($key), 1).1 + )*0]>;
+            impl<'a, T: 'a> $crate::params::ParamStorage<'a> for ParamsWithExtra<T> {
+                type Ref = Ref<'a>;
+                type RefMut = RefMut<'a>;
+                type Extra = T;
+                type Refs = $crate::params::FixedSizeArrayIter<[(Ref<'a>, &'a T); $( (stringify!($key), 1).1 + )*0]>;
+                type RefsMut = $crate::params::FixedSizeArrayIter<[(RefMut<'a>, &'a mut T); $( (stringify!($key), 1).1 + )*0]>;
 
                 fn refs(&'a self) -> Self::Refs {
                     $crate::params::FixedSizeArrayIter::new([
                         $(
-                            Ref::$key(&self.$key)
+                            { let (val, extra) = &self.$key; (Ref::$key(val), extra) }
                         ),*
                     ])
                 }
@@ -264,7 +370,7 @@ macro_rules! specs {
                 fn refs_mut(&'a mut self) -> Self::RefsMut {
                     $crate::params::FixedSizeArrayIter::new([
                         $(
-                            RefMut::$key(&mut self.$key)
+                            { let (val, extra) = &mut self.$key; (RefMut::$key(val), extra) }
                         ),*
                     ])
                 }
@@ -293,15 +399,15 @@ mod tests {
 
     #[test]
     fn test_params() {
-        let mut storage = <foo::Specifier as Specifier>::ParamStorage::default();
+        let mut storage = <foo::Specifier as HasParamStorage<()>>::Storage::default();
 
-        for (i, val) in storage.refs_mut().enumerate() {
+        for (i, (val, ())) in storage.refs_mut().enumerate() {
             val.when_matches(|val: &mut u32| *val = i as _)
                 .or_else(|val| val.when_matches(|val: &mut u64| *val = i as _))
                 .unwrap_or_else(|_| unreachable!())
         }
 
-        for (i, val) in storage.refs().enumerate() {
+        for (i, (val, ())) in storage.refs().enumerate() {
             val.when_matches(|val: &u32| assert_eq!(*val, i as u32))
                 .or_else(|val| val.when_matches(|val: &u64| assert_eq!(*val, i as u64)))
                 .unwrap_or_else(|_| unreachable!())
