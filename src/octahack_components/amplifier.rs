@@ -1,7 +1,4 @@
-use crate::{
-    components::Update, AnyIter, Component, GetInput, GetOutput, GetParam, Value, ValueExt,
-    ValueIter,
-};
+use crate::{AnyIter, Component, GetInput, GetOutput, GetParam, Value, ValueExt, ValueIter};
 use az::Az;
 
 crate::specs! {
@@ -10,8 +7,8 @@ crate::specs! {
     }
 }
 
+use self::amplifier::Only;
 pub use self::amplifier::Specifier;
-use self::amplifier::IO;
 
 impl Default for self::amplifier::Params {
     fn default() -> Self {
@@ -31,21 +28,22 @@ impl Component for Amplifier {
     type OutputSpecifier = Specifier;
     type ParamSpecifier = Specifier;
     type OutputIter = OutputIter;
-}
 
-impl<Ctx> Update<Ctx> for Amplifier {
-    fn update(&self, _: Ctx) -> Self {
+    fn update<Ctx>(&self, _: &Ctx) -> Self
+    where
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::OutputSpecifier>,
+    {
         *self
     }
 }
 
-impl<Ctx> GetOutput<Ctx, self::amplifier::Only> for Amplifier
-where
-    Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::OutputSpecifier, IO>,
-{
-    fn output(&self, ctx: Ctx) -> OutputIter {
+impl GetOutput<self::amplifier::Only> for Amplifier {
+    fn output<Ctx>(&self, ctx: &Ctx) -> OutputIter
+    where
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::OutputSpecifier>,
+    {
         AnyIter::from(
-            ctx.input(Specifier::Only)
+            ctx.input::<Only>()
                 .map(|inputs| {
                     {
                         inputs

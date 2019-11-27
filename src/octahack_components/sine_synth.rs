@@ -1,6 +1,4 @@
-use crate::{
-    components::Update, AnyIter, Component, GetInput, GetOutput, GetParam, Value, ValueIter,
-};
+use crate::{AnyIter, Component, GetInput, GetOutput, GetParam, Value, ValueIter};
 
 // TODO: This should be in the context
 const FREQUENCY: usize = 44100;
@@ -51,25 +49,24 @@ impl Component for SineSynth {
     type OutputSpecifier = Specifier;
     type ParamSpecifier = Specifier;
     type OutputIter = Iter;
-}
 
-impl<Ctx> Update<Ctx> for SineSynth
-where
-    Ctx: GetInput<<Self as Component>::InputSpecifier> + GetParam<Self::ParamSpecifier, IO>,
-{
-    fn update(&self, ctx: Ctx) -> Self {
-        let freq = volt_to_octave(ctx.param());
+    fn update<Ctx>(&self, ctx: &Ctx) -> Self
+    where
+        Ctx: GetInput<<Self as Component>::InputSpecifier>
+            + GetParam<<Self as Component>::ParamSpecifier>,
+    {
+        let freq = volt_to_octave(ctx.param::<IO>());
         SineSynth {
             tick: self.tick + freq / FREQUENCY as f64,
         }
     }
 }
 
-impl<Ctx> GetOutput<Ctx, self::synth::IO> for SineSynth
-where
-    Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier, IO>,
-{
-    fn output(&self, _: Ctx) -> Iter {
+impl GetOutput<self::synth::IO> for SineSynth {
+    fn output<Ctx>(&self, _: &Ctx) -> Iter
+    where
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>,
+    {
         AnyIter::from(std::iter::once(Value::saturating_from_num(
             (2. * std::f64::consts::PI * self.tick).sin() / 2.,
         )))

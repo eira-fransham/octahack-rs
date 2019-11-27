@@ -1,3 +1,4 @@
+use crate::{GetInput, GetParam};
 use arrayvec::Array;
 use std::convert::TryFrom;
 
@@ -70,7 +71,7 @@ pub trait Possibly<T>: Sized {
         F: FnOnce(T) -> O;
 }
 
-trait PossiblyHelper<B> {
+pub trait PossiblyHelper<B> {
     type Error;
 
     fn to_tuple(self) -> (Self::Error, B);
@@ -129,11 +130,13 @@ pub trait Storage<'a> {
     fn refs_mut(&'a mut self) -> Self::RefsMut;
 }
 
-pub trait Output<C, Spec>
+pub trait Output<C>
 where
     C: crate::Component,
 {
-    fn get_output(self, comp: &C, spec: Spec) -> C::OutputIter;
+    fn get_output<Ctx>(self, comp: &C, ctx: &Ctx) -> C::OutputIter
+    where
+        Ctx: GetInput<C::InputSpecifier> + GetParam<C::ParamSpecifier>;
 }
 
 pub trait Specifier {}
@@ -196,11 +199,15 @@ impl<'a, V: 'a> Storage<'a> for EmptyStorage<V> {
     }
 }
 
-pub trait HasParamExtra<V> {
+pub trait ParamStorageGet<V> {
     type Output;
     type Extra;
 
     fn get(&self) -> &(Self::Output, Self::Extra);
+}
+
+pub trait StorageGet<V>: for<'a> Storage<'a> {
+    fn get<'a>(&'a self) -> &'a <Self as Storage<'a>>::Inner;
 }
 
 pub trait Key {
@@ -218,6 +225,25 @@ macro_rules! specs {
                 $( $key, )*
             }
 
+            impl<C> $crate::params::Output<C> for Specifier
+            where
+                C: $crate::Component,
+                $(
+                    C: $crate::GetOutput<$key>,
+                )*
+            {
+                fn get_output<Ctx>(self, comp: &C, ctx: &Ctx) -> C::OutputIter
+                where
+                    Ctx: $crate::GetInput<C::InputSpecifier> + $crate::GetParam<C::ParamSpecifier>
+                    {
+                        match self {
+                            $(
+                                Self::$key => <C as $crate::GetOutput<$key>>::output(comp, ctx),
+                            )*
+                        }
+                    }
+            }
+
             impl $crate::params::Specifier for Specifier {}
 
             impl<T: 'static> $crate::params::HasParamStorage<T> for Specifier {
@@ -226,22 +252,6 @@ macro_rules! specs {
 
             impl<T: 'static> $crate::params::HasStorage<T> for Specifier {
                 type Storage = Storage<T>;
-            }
-
-            impl<Ctx, C> $crate::params::Output<C, Specifier> for Ctx
-            where $(
-                C: $crate::components::GetOutput<Ctx, $key>,
-                Ctx: $crate::GetInput<C::InputSpecifier> + $crate::GetParam<C::ParamSpecifier, $key>,
-            )*
-            {
-                fn get_output(self, comp: &C, spec: Specifier) -> C::OutputIter
-                {
-                    match spec {
-                        $(
-                            Specifier::$key => <C as $crate::components::GetOutput<Ctx, $key>>::output(comp, self),
-                        )*
-                    }
-                }
             }
 
             impl $crate::RuntimeSpecifier for Specifier {
@@ -328,11 +338,17 @@ macro_rules! specs {
             }
 
             $(
-                impl<T> $crate::params::HasParamExtra<$key> for ParamsWithExtra<T> {
+                impl<T> $crate::params::ParamStorageGet<$key> for ParamsWithExtra<T> {
                     type Output = super::$value;
                     type Extra = T;
 
                     fn get(&self) -> &(Self::Output, Self::Extra) {
+                        &self.$key
+                    }
+                }
+
+                impl<T: 'static> $crate::params::StorageGet<$key> for Storage<T> {
+                    fn get<'a>(&'a self) -> &'a T {
                         &self.$key
                     }
                 }

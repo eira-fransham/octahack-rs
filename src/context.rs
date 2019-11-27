@@ -1,55 +1,10 @@
 use crate::{
-    params::{Key, HasParamStorage},
-    Extra, Value, ValueIter,
+    components::anycomponent::AnyContext,
+    params::{HasParamStorage, HasStorage, Key, ParamStorageGet, StorageGet},
+    rack::{InternalParamWire, InternalWire, Lerp, ParamWire},
+    Component, Value, ValueIter,
 };
-
-use std::marker::PhantomData;
-
-pub struct QuickContext<C, InputFn, ParamFn> {
-    ctx: C,
-    input_fn: InputFn,
-    param_fn: ParamFn,
-}
-
-impl<InputFn> QuickContext<(), InputFn, ()> {
-    pub fn input(input_fn: InputFn) -> Self {
-        Self::new((), input_fn, ())
-    }
-}
-
-impl<C, InputFn, ParamFn> QuickContext<C, InputFn, ParamFn> {
-    pub fn new(ctx: C, input_fn: InputFn, param_fn: ParamFn) -> Self {
-        QuickContext {
-            ctx,
-            input_fn,
-            param_fn,
-        }
-    }
-}
-
-// TODO: Support MIDI inputs
-impl<C, InputFn, ParamFn, Spec, I> GetInput<Spec> for QuickContext<C, InputFn, ParamFn>
-where
-    InputFn: Fn(&C, Spec) -> Option<I>,
-    I: ValueIter + Send,
-{
-    type Iter = I;
-
-    fn input(&self, spec: Spec) -> Option<Self::Iter> {
-        (self.input_fn)(&self.ctx, spec)
-    }
-}
-
-impl<C, Spec> GetInput<Spec> for &'_ C
-where
-    C: GetInput<Spec>,
-{
-    type Iter = C::Iter;
-
-    fn input(&self, spec: Spec) -> Option<Self::Iter> {
-        C::input(*self, spec)
-    }
-}
+use std::{convert::TryInto, marker::PhantomData};
 
 pub trait ContextMeta {
     /// Samples per second
@@ -68,17 +23,96 @@ pub trait FileAccess<Kind> {
     fn read(&self, id: FileId<Kind>) -> Option<Self::ReadFile>;
 }
 
-pub trait GetInput<Spec> {
+pub trait GetGlobalInput<Spec> {
     type Iter: ValueIter + Send;
 
     // `None` means that this input is not wired
     fn input(&self, spec: Spec) -> Option<Self::Iter>;
 }
 
-pub trait GetParam<Spec, T: Key> {
-    fn param(&self) -> T::Value;
+pub trait GetInput<Spec> {
+    type Iter: ValueIter + Send;
+
+    // `None` means that this input is not wired
+    fn input<T: Key>(&self) -> Option<Self::Iter>
+    where
+        Spec: HasStorage<InternalWire>,
+        Spec::Storage: StorageGet<T>;
 }
 
-pub trait GetRuntimeParam<Spec> {
-    fn param(&self, spec: Spec) -> !;
+pub trait GetParam<Spec: crate::params::Specifier> {
+    fn param<T: Key>(&self) -> T::Value
+    where
+        Spec: HasParamStorage<InternalParamWire>,
+        Spec::Storage: ParamStorageGet<T, Extra = InternalParamWire, Output = T::Value>,
+        T::Value: Clone + crate::rack::Lerp;
+}
+
+pub struct Context<'a, Ctx, C> {
+    ctx: &'a Ctx,
+    _marker: PhantomData<C>,
+}
+
+impl<'a, Ctx, C> Context<'a, Ctx, C> {
+    pub fn new(ctx: &'a Ctx) -> Self {
+        Self {
+            ctx,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, Ctx, C> GetInput<C::InputSpecifier> for Context<'a, Ctx, C>
+where
+    C: Component,
+    C::InputSpecifier: HasStorage<InternalWire>,
+    Ctx: AnyContext,
+    for<'any> &'any Ctx::InputStorage:
+        TryInto<&'any <C::InputSpecifier as HasStorage<InternalWire>>::Storage>,
+{
+    type Iter = Ctx::Iter;
+
+    // `None` means that this input is not wired
+    fn input<T: Key>(&self) -> Option<Self::Iter>
+    where
+        C::InputSpecifier: HasStorage<InternalWire>,
+        <C::InputSpecifier as HasStorage<InternalWire>>::Storage: StorageGet<T>,
+    {
+        self.ctx
+            .inputs()
+            .try_into()
+            .unwrap_or_else(|_| unreachable!())
+            .get()
+            .map(|wire| self.ctx.read_wire(wire))
+    }
+}
+
+impl<'a, Ctx, C> GetParam<C::ParamSpecifier> for Context<'a, Ctx, C>
+where
+    C: Component,
+    C::ParamSpecifier: crate::params::Specifier + HasParamStorage<InternalParamWire>,
+    Ctx: AnyContext,
+    for<'any> &'any Ctx::ParamStorage:
+        TryInto<&'any <C::ParamSpecifier as HasParamStorage<InternalParamWire>>::Storage>,
+{
+    fn param<T: Key>(&self) -> T::Value
+    where
+        C::ParamSpecifier: HasParamStorage<InternalParamWire>,
+        <C::ParamSpecifier as HasParamStorage<InternalParamWire>>::Storage:
+            ParamStorageGet<T, Extra = InternalParamWire, Output = T::Value>,
+        T::Value: Clone + crate::rack::Lerp,
+    {
+        let (nat_val, wire) = self
+            .ctx
+            .params()
+            .try_into()
+            .unwrap_or_else(|_| unreachable!())
+            .get();
+
+        wire.as_ref()
+            .map(|ParamWire { src, value }| {
+                Lerp::lerp(nat_val, value, self.ctx.read_wire(*src).analog())
+            })
+            .unwrap_or(nat_val.clone())
+    }
 }

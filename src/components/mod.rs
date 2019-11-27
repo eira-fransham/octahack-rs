@@ -40,14 +40,16 @@ pub trait Component: Sized {
     type ParamSpecifier: Specifier;
     // TODO: Use GATs to allow adapators to be used internally.
     type OutputIter: ValueIter + Send;
+
+    fn update<Ctx>(&self, _ctx: &Ctx) -> Self
+    where
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
 }
 
-pub trait Update<Ctx> {
-    fn update(&self, _ctx: Ctx) -> Self;
-}
-
-pub trait GetOutput<Ctx, RuntimeSpecifier>: Update<Ctx> + Component {
-    fn output(&self, ctx: Ctx) -> Self::OutputIter;
+pub trait GetOutput<RuntimeSpecifier>: Component {
+    fn output<Ctx>(&self, ctx: &Ctx) -> Self::OutputIter
+    where
+        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
 }
 
 // TODO: Support MIDI inputs

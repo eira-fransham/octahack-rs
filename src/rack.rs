@@ -1,17 +1,15 @@
 use crate::{
-    context::GetParam,
-    params::{
-        HasParamExtra, HasParamStorage, HasStorage, Key, ParamStorage, Possibly, Specifier, Storage,
-    },
-    AnyComponent, AnyInputSpec, AnyOutputSpec, AnyParamSpec, Extra, GetInput, QuickContext,
-    RuntimeSpecifier, SpecId, Value, ValueExt, ValueIter,
+    components::anycomponent::AnyContext,
+    context::GetGlobalInput,
+    params::{HasStorage, ParamStorage, Possibly, Storage},
+    AnyComponent, AnyInputSpec, AnyOutputSpec, RuntimeSpecifier, SpecId, Value, ValueExt,
+    ValueIter,
 };
 use arrayvec::ArrayVec;
 use fixed::types::{U0F32, U1F31};
 use fxhash::FxHashMap;
 use itertools::Either;
 use std::{
-    convert::TryInto,
     iter::ExactSizeIterator,
     marker::PhantomData,
     ops::{Index, IndexMut},
@@ -169,8 +167,8 @@ pub struct ComponentId(usize);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamWire {
-    src: Wire<marker::Output>,
-    value: Value,
+    pub src: Wire<marker::Output>,
+    pub value: Value,
 }
 
 // TODO: Scenes
@@ -185,7 +183,23 @@ where
     C: AnyComponent,
 {
     inner: C,
-    storage: C::ParamStorage,
+    params: C::ParamStorage,
+    inputs: C::InputStorage,
+}
+
+impl<C> std::fmt::Debug for TaggedComponent<C>
+where
+    C: AnyComponent + std::fmt::Debug,
+    C::ParamStorage: std::fmt::Debug,
+    C::InputStorage: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("TaggedComponent")
+            .field("inner", &self.inner)
+            .field("params", &self.params)
+            .field("inputs", &self.inputs)
+            .finish()
+    }
 }
 
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -208,6 +222,21 @@ where
     ids: ComponentIdGen,
     storage: FxHashMap<ComponentId, TaggedComponent<C>>,
     indices: Vec<ComponentId>,
+}
+
+impl<C> std::fmt::Debug for ComponentVec<C>
+where
+    C: AnyComponent + std::fmt::Debug,
+    C::ParamStorage: std::fmt::Debug,
+    C::InputStorage: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("TaggedComponent")
+            .field("ids", &self.ids)
+            .field("storage", &self.storage)
+            .field("indices", &self.indices)
+            .finish()
+    }
 }
 
 impl<C> Default for ComponentVec<C>
@@ -294,6 +323,22 @@ where
     _marker: PhantomData<(InputSpec, OutputSpec)>,
 }
 
+impl<C, I, O> std::fmt::Debug for Rack<C, I, O>
+where
+    C: AnyComponent + std::fmt::Debug,
+    O: HasStorage<InternalWire>,
+    O::Storage: std::fmt::Debug,
+    C::ParamStorage: std::fmt::Debug,
+    C::InputStorage: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("Rack")
+            .field("components", &self.components)
+            .field("out_wires", &self.out_wires)
+            .finish()
+    }
+}
+
 impl<C, InputSpec, OutputSpec> Rack<C, InputSpec, OutputSpec>
 where
     OutputSpec: HasStorage<InternalWire>,
@@ -313,14 +358,13 @@ impl<C, InputSpec, OutputSpec> Rack<C, InputSpec, OutputSpec>
 where
     InputSpec: RuntimeSpecifier,
     OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
-    for<'a> <<C as AnyComponent>::ParamStorage as ParamStorage<'a>>::Ref: Possibly<&'a Value>,
     C: AnyComponent,
 {
-    pub fn update<Ctx>(&mut self, ctx: Ctx)
+    pub fn update<Ctx>(&mut self, ctx: &Ctx)
     where
-        Ctx: GetInput<InputSpec>,
+        Ctx: GetGlobalInput<InputSpec>,
     {
-        self.as_slice().update(SimpleCow::Owned(ctx));
+        self.as_slice().update(ctx);
     }
 
     // TODO: Return a result
@@ -329,13 +373,11 @@ where
         match dst.0 {
             WireDstInner::Input(dst) => match dst.element() {
                 ElementSpecifier::Component { id } => {
-                    self.components[id]
-                        .storage
+                    *self.components[id]
+                        .inputs
                         .refs_mut()
                         .nth(dst.input_id().0)
-                        .unwrap()
-                        .1
-                        .inputs = Some(filled_output);
+                        .unwrap() = Some(filled_output);
                 }
                 ElementSpecifier::Rack => {
                     *self.out_wires.refs_mut().nth(dst.input_id().0).unwrap() = Some(filled_output)
@@ -343,13 +385,12 @@ where
             },
             WireDstInner::Param(val, dst) => match dst.element() {
                 ElementSpecifier::Component { id } => {
-                    self.components[id]
-                        .storage
+                    *self.components[id]
+                        .params
                         .refs_mut()
                         .nth(dst.param_id().0)
                         .unwrap()
-                        .1
-                        .params = Some(ParamWire {
+                        .1 = Some(ParamWire {
                         value: val,
                         src: filled_output,
                     })
@@ -369,7 +410,7 @@ where
             crate::params::Possibly<&'a mut V>,
     {
         let (v, _) = self.components[component]
-            .storage
+            .params
             .refs_mut()
             .nth(param.id())
             .unwrap();
@@ -380,11 +421,13 @@ where
     pub fn new_component(&mut self, component: impl Into<C>) -> usize {
         let component = component.into();
         let out = self.components.len();
-        let storage = component.param_default();
+        let params = component.param_default();
+        let inputs = component.input_default();
 
         self.components.push(TaggedComponent {
             inner: component,
-            storage,
+            inputs,
+            params,
         });
 
         out
@@ -393,19 +436,18 @@ where
     /// Get a specific output of this rack. This takes a mutable reference because it technically
     /// isn't pure, but it _is_ idempotent.
     pub fn output<'a, Ctx: 'a>(
-        &mut self,
+        &'a mut self,
         spec: OutputSpec,
-        ctx: Ctx,
-    ) -> Option<impl ValueIter + Send + 'a>
+        ctx: &'a Ctx,
+    ) -> Option<impl ValueIter + Send>
     where
-        Ctx: GetInput<InputSpec>,
-        C: 'a,
+        Ctx: GetGlobalInput<InputSpec>,
     {
         let wire = (*self.out_wires.refs().nth(spec.id()).unwrap())?;
 
-        let out = self.as_slice().as_ref().output(wire, &ctx);
+        let out = self.as_slice().as_ref().output(wire, ctx);
 
-        out
+        Some(out)
     }
 
     fn as_slice(&mut self) -> RackSlice<&'_ mut ComponentVec<C>, InputSpec> {
@@ -422,96 +464,88 @@ struct RackSlice<Components, InputSpec> {
     _marker: PhantomData<InputSpec>,
 }
 
-struct RackContext<'a, Ctx, C, I>
+impl<C, I> Clone for RackSlice<C, I>
+where
+    C: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            components: self.components.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+pub struct RackContext<'a, Ctx, C, I>
 where
     C: AnyComponent,
 {
     ctx: &'a Ctx,
     next: RackSlice<&'a ComponentVec<C>, I>,
-    cur: &'a C::ParamStorage,
+    cur: &'a TaggedComponent<C>,
 }
 
-impl<'a, Ctx, Spec, C, I, T: Key> GetParam<Spec, T> for RackContext<'a, Ctx, C, I>
+impl<'a, Ctx, C, I> AnyContext for RackContext<'a, Ctx, C, I>
 where
     C: AnyComponent,
-    Spec: Specifier + HasParamStorage<Extra>,
-    Spec::Storage: HasParamExtra<T, Extra = Extra>,
-    for<'any> &'any <Spec::Storage as HasParamExtra<T>>::Output: Possibly<&'any Value>,
-    for<'any> &'any C::ParamStorage: TryInto<&'any Spec::Storage>,
+    I: RuntimeSpecifier,
+    Ctx: GetGlobalInput<I>,
 {
-    fn param(&self) -> T::Value {
-        type UCont = U0F32;
+    type ParamStorage = C::ParamStorage;
+    type InputStorage = C::InputStorage;
+    type Iter = Either<C::OutputIter, Ctx::Iter>;
 
-        let (nat_val, wires): &(<Spec::Storage as HasParamExtra<T>>::Output, _) =
-            <Spec::Storage as HasParamExtra<T>>::get(
-                self.cur
-                    .try_into()
-                    // TODO: This should be unreachable
-                    .unwrap_or_else(|_| unimplemented!()),
-            );
+    fn params(&self) -> &Self::ParamStorage {
+        &self.cur.params
+    }
 
-        let nat_val = nat_val
-            .when_matches(|val: &Value| val)
-            .unwrap_or_else(|_| unreachable!());
-        let wire = &wires.params;
+    fn inputs(&self) -> &Self::InputStorage {
+        &self.cur.inputs
+    }
 
-        wire.as_ref()
-            .and_then(|ParamWire { src, value }| {
-                self.next
-                    .output(*src, self.ctx)
-                    .map(|outputs| (value, outputs))
-            })
-            .map(|(wire_value, outputs)| {
-                fn remap_0_1(val: U1F31) -> U0F32 {
-                    U0F32::from_bits(val.to_bits())
-                }
-
-                fn remap_0_2(val: U0F32) -> U1F31 {
-                    U1F31::from_bits(val.to_bits())
-                }
-
-                let outputs = outputs.analog().unwrap();
-                let wire_value = remap_0_1(wire_value.to_u());
-                let average_output_this_tick: UCont =
-                    average_fixed(outputs.map(|o| remap_0_1(o.to_u())));
-                let unat = remap_0_1(nat_val.to_u());
-
-                // Weighted average: wire value == max means out is `average_output_this_tick`,
-                // wire value == min means out is `unat`, and values between those extremes lerp
-                // between the two.
-                Value::from_u(remap_0_2(
-                    (unat * (UCont::max_value() - average_output_this_tick))
-                        + wire_value * average_output_this_tick,
-                ))
-            })
-            .unwrap_or(*nat_val)
+    fn read_wire(&self, wire: Wire<marker::Output>) -> Self::Iter {
+        self.next.output(wire, self.ctx)
     }
 }
 
-fn get_input<'inner, 'outer, InputSpec, Ctx, C>(
-    (ctx, rest, storage): &'inner (
-        &'outer Ctx,
-        &'outer ComponentVec<C>,
-        &'outer C::ParamStorage,
-    ),
-    spec: AnyInputSpec,
-) -> Option<impl ValueIter + Send + 'outer>
-where
-    InputSpec: RuntimeSpecifier,
-    C: AnyComponent,
-    C::OutputIter: 'outer,
-    for<'a> <<C as AnyComponent>::ParamStorage as ParamStorage<'a>>::Ref: Possibly<&'a Value>,
-    Ctx: GetInput<InputSpec>,
-{
-    let wire = storage.refs().nth(spec.0).unwrap().1.inputs?;
+pub trait Lerp: Sized {
+    fn lerp<I: ExactSizeIterator<Item = Value>>(
+        &self,
+        wire_value: &Value,
+        amount: Option<I>,
+    ) -> Self;
+}
 
-    Some(
-        RackSlice {
-            components: *rest,
-            _marker: PhantomData,
+impl Lerp for Value {
+    fn lerp<I: ExactSizeIterator<Item = Value>>(
+        &self,
+        wire_value: &Value,
+        amount: Option<I>,
+    ) -> Self {
+        type UCont = U0F32;
+
+        let amount = amount.unwrap();
+
+        fn remap_0_1(val: U1F31) -> U0F32 {
+            U0F32::from_bits(val.to_bits())
         }
-        .output(wire, *ctx)?,
-    )
+
+        fn remap_0_2(val: U0F32) -> U1F31 {
+            U1F31::from_bits(val.to_bits())
+        }
+
+        let wire_value = remap_0_1(wire_value.to_u());
+        let average_output_this_tick: UCont = average_fixed(amount.map(|o| remap_0_1(o.to_u())));
+        let unat = remap_0_1(self.to_u());
+
+        // Weighted average: wire value == max means out is `average_output_this_tick`,
+        // wire value == min means out is `unat`, and values between those extremes lerp
+        // between the two.
+        Value::from_u(remap_0_2(
+            (unat * (UCont::max_value() - average_output_this_tick))
+                + wire_value * average_output_this_tick,
+        ))
+    }
 }
 
 /// Improves precision (and possibly performance, too) by waiting as long as possible to do division.
@@ -541,22 +575,23 @@ where
 impl<C, InputSpec> RackSlice<&'_ mut ComponentVec<C>, InputSpec>
 where
     C: AnyComponent,
-    for<'a> <<C as AnyComponent>::ParamStorage as ParamStorage<'a>>::Ref: Possibly<&'a Value>,
-
     InputSpec: RuntimeSpecifier,
 {
-    fn update<Ctx>(&mut self, ctx: SimpleCow<'_, Ctx>)
+    fn update<Ctx>(&mut self, ctx: &Ctx)
     where
-        Ctx: GetInput<InputSpec>,
+        Ctx: GetGlobalInput<InputSpec>,
     {
         for i in 0..self.components.len() {
             let new = {
-                let this = &self.components[i];
+                let cur = &self.components[i];
 
-                this.inner.update(RackContext {
-                    ctx,
-                    next: self,
-                    cur: this,
+                cur.inner.update(&RackContext {
+                    ctx: ctx,
+                    next: RackSlice {
+                        components: &*self.components,
+                        _marker: PhantomData::<InputSpec>,
+                    },
+                    cur,
                 })
             };
 
@@ -577,20 +612,25 @@ where
     }
 }
 
-enum Context<'a, Ctx, C, I> {
-    Rack(RackContext<'a, Ctx, C, I>),
-    Other(Ctx),
-}
-
-enum SimpleCow<'a, C> {
+pub enum SimpleCow<'a, C> {
     Borrowed(&'a C),
     Owned(C),
 }
 
 impl<'a, C> SimpleCow<'a, C> {
-    fn as_ref(&self) -> &C {
+    pub fn as_ref(&self) -> &C {
         match self {
             Self::Borrowed(v) => v,
+            Self::Owned(v) => v,
+        }
+    }
+
+    pub fn to_owned(self) -> C
+    where
+        C: Clone,
+    {
+        match self {
+            Self::Borrowed(v) => C::clone(v),
             Self::Owned(v) => v,
         }
     }
@@ -611,38 +651,38 @@ impl<'a, C> From<&'a C> for SimpleCow<'a, C> {
 impl<C, InputSpec> RackSlice<&'_ ComponentVec<C>, InputSpec>
 where
     C: AnyComponent,
-    for<'a> <<C as AnyComponent>::ParamStorage as ParamStorage<'a>>::Ref: Possibly<&'a Value>,
     InputSpec: RuntimeSpecifier,
 {
-    fn output<Ctx>(
-        &self,
+    fn output<'a, Ctx>(
+        &'a self,
         Wire(wire): Wire<marker::Output>,
-        ctx: &Context<Ctx, C, InputSpec>,
-    ) -> Option<impl ValueIter + Send>
+        ctx: &'a Ctx,
+    ) -> Either<C::OutputIter, Ctx::Iter>
     where
-        Ctx: GetInput<InputSpec>,
+        Ctx: GetGlobalInput<InputSpec>,
     {
         match wire.element() {
             ElementSpecifier::Component { id } => {
                 // TODO: We will never allow backwards- or self-wiring, so maybe we can have some
                 //       safe abstraction that allows us to omit checks in the `split_at_mut` and
                 //       here.
-                let this = &self.components[id];
+                let cur = &self.components[id];
 
-                let out = this.inner.output(
+                let out = cur.inner.output(
                     AnyOutputSpec(wire.output_id().0),
-                    Context::Rack(RackContext {
+                    &RackContext {
                         ctx,
-                        next: self,
-                        cur: this,
-                    }),
+                        next: self.clone(),
+                        cur,
+                    },
                 );
 
-                Some(Either::Left(out))
+                Either::Left(out)
             }
-            ElementSpecifier::Rack => ctx
-                .input(InputSpec::from_id(wire.io_index))
-                .map(Either::Right),
+            ElementSpecifier::Rack => unimplemented!(), /*ctx
+                                                        .input(InputSpec::from_id(wire.io_index))
+                                                        .map(Either::Right)
+                                                        .unwrap(),*/
         }
     }
 }

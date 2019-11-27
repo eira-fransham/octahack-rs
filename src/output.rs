@@ -1,11 +1,14 @@
 use crate::{
+    components::NoIter,
+    context::GetGlobalInput,
     params::{HasStorage, ParamStorage, Possibly},
-    rack::InternalWire,
-    AnyComponent, AnyIter, QuickContext, Rack, RuntimeSpecifier, SpecId, Value, ValueIter,
-    ValueKind,
+    rack::{self, InternalWire},
+    AnyComponent, AnyIter, Rack, RuntimeSpecifier, SpecId, Value, ValueIter, ValueKind,
 };
 use fixed::types::I1F15;
+use nom_midi::MidiEventType;
 use rodio::Source;
+use std::borrow::Cow;
 
 fn num_audio_channels<Spec>() -> u8
 where
@@ -63,25 +66,25 @@ where
     }
 }
 
-pub struct AudioStreamer<'a, S, C, InputSpec, OutputSpec>
+pub struct AudioStreamer<S, C, InputSpec, OutputSpec>
 where
     C: AnyComponent,
     OutputSpec: HasStorage<InternalWire>,
 {
     output_id: SpecId,
-    out_iter: Option<Box<dyn Iterator<Item = i16> + Send + 'a>>,
+    out_iter: Option<Box<dyn Iterator<Item = i16> + Send>>,
     sample_rate: u32,
     audio_inputs: S,
     rack: Rack<C, InputSpec, OutputSpec>,
 }
 
-impl<'a, S, C, InputSpec, OutputSpec>
-    AudioStreamer<'a, rodio::source::UniformSourceIterator<S, i16>, C, InputSpec, OutputSpec>
+impl<S, C, InputSpec, OutputSpec>
+    AudioStreamer<rodio::source::UniformSourceIterator<S, i16>, C, InputSpec, OutputSpec>
 where
     C: AnyComponent,
     InputSpec: RuntimeSpecifier,
     OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
-    S: Source + Iterator + 'a,
+    S: Source + Iterator + 'static,
     S::Item: rodio::Sample,
 {
     pub fn new_convert(
@@ -104,10 +107,10 @@ where
 
 const DEFAULT_SAMPLE_RATE: u32 = 44100;
 
-impl<'a, S, C, InputSpec, OutputSpec> AudioStreamer<'a, S, C, InputSpec, OutputSpec>
+impl<S, C, InputSpec, OutputSpec> AudioStreamer<S, C, InputSpec, OutputSpec>
 where
     C: AnyComponent,
-    S: Source + Iterator<Item = i16> + 'a,
+    S: Source + Iterator<Item = i16> + 'static,
     InputSpec: RuntimeSpecifier,
     OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
 {
@@ -141,39 +144,46 @@ where
     }
 }
 
-impl<'a, S, C, InputSpec, OutputSpec> AudioStreamer<'a, S, C, InputSpec, OutputSpec>
+pub struct Context<'a> {
+    sources: Cow<'a, [i16]>,
+}
+
+impl<'a, InputSpec> GetGlobalInput<InputSpec> for Context<'a>
 where
-    S: Source + Iterator<Item = i16> + 'a,
+    InputSpec: RuntimeSpecifier,
+{
+    type Iter = AnyIter<NoIter<MidiEventType>, std::vec::IntoIter<Value>>;
+
+    // `None` means that this input is not wired
+    fn input(&self, spec: InputSpec) -> Option<Self::Iter> {
+        let mut id = 0;
+
+        for i in 0..spec.id() {
+            if InputSpec::from_id(i).value_type().kind == ValueKind::Continuous {
+                id += InputSpec::TYPES[i].channels.unwrap();
+            }
+        }
+
+        Some(AnyIter::from(
+            // TODO
+            self.sources
+                [id as usize..(id + InputSpec::TYPES[spec.id()].channels.unwrap()) as usize]
+                .iter()
+                .map(|&val| Value::from_num(I1F15::from_bits(val)))
+                .collect::<Vec<_>>()
+                .into_iter(),
+        ))
+    }
+}
+
+impl<S, C, InputSpec, OutputSpec> AudioStreamer<S, C, InputSpec, OutputSpec>
+where
+    S: Source + Iterator<Item = i16> + 'static,
     C: AnyComponent + 'static,
-    for<'any> <<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Ref: Possibly<&'any Value>,
     InputSpec: RuntimeSpecifier,
     OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
 {
-    fn update(&mut self) -> Option<impl Iterator<Item = i16> + ExactSizeIterator> {
-        macro_rules! context {
-            ($sources:expr) => {
-                QuickContext::input(move |_: &(), input: InputSpec| {
-                    let mut id = 0;
-
-                    for i in 0..input.id() {
-                        if InputSpec::from_id(i).value_type().kind == ValueKind::Continuous {
-                            id += InputSpec::TYPES[i].channels.unwrap();
-                        }
-                    }
-
-                    Some(AnyIter::from(
-                        // TODO
-                        Vec::from(
-                            &$sources[id as usize
-                                ..(id + InputSpec::TYPES[input.id()].channels.unwrap()) as usize],
-                        )
-                        .into_iter()
-                        .map(|val| Value::from_num(I1F15::from_bits(val))),
-                    ))
-                })
-            };
-        }
-
+    fn update(&mut self) -> Option<impl ExactSizeIterator<Item = i16>> {
         // Originally this was done with a
         loop {
             let mut sources = vec![];
@@ -188,10 +198,10 @@ where
                     sources.push(self.audio_inputs.next()?);
                 }
 
-                let sources = &sources[..];
-                let ctx = context!(sources);
+                let sources = Cow::Borrowed(&sources[..]);
+                let ctx = Context { sources };
 
-                self.rack.update(ctx);
+                self.rack.update::<Context>(&ctx);
             }
 
             let new_id = {
@@ -211,14 +221,15 @@ where
             };
 
             if let Some(new_id) = new_id {
-                let ctx = context!(sources);
+                let sources = Cow::Owned(sources);
+                let ctx: Context<'static> = Context { sources };
 
                 self.output_id = new_id + 1;
 
                 return Some(OrZero {
                     iter: self
                         .rack
-                        .output(OutputSpec::VALUES[new_id].clone(), ctx)
+                        .output(OutputSpec::VALUES[new_id].clone(), &ctx)
                         .map(|val| {
                             val.analog()
                                 .unwrap()
@@ -233,11 +244,10 @@ where
     }
 }
 
-impl<'a, S, C, InputSpec, OutputSpec> Iterator for AudioStreamer<'a, S, C, InputSpec, OutputSpec>
+impl<S, C, InputSpec, OutputSpec> Iterator for AudioStreamer<S, C, InputSpec, OutputSpec>
 where
-    S: Source + Iterator<Item = i16> + 'a,
+    S: Source + Iterator<Item = i16> + 'static,
     C: AnyComponent + 'static,
-    for<'any> <<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Ref: Possibly<&'any Value>,
     InputSpec: RuntimeSpecifier,
     OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
 {
@@ -257,12 +267,10 @@ where
     }
 }
 
-impl<'a, S, C, InputSpec, OutputSpec> rodio::Source
-    for AudioStreamer<'a, S, C, InputSpec, OutputSpec>
+impl<S, C, InputSpec, OutputSpec> rodio::Source for AudioStreamer<S, C, InputSpec, OutputSpec>
 where
-    S: Source + Iterator<Item = i16> + 'a,
+    S: Source + Iterator<Item = i16> + 'static,
     C: AnyComponent + 'static,
-    for<'any> <<C as AnyComponent>::ParamStorage as ParamStorage<'any>>::Ref: Possibly<&'any Value>,
     InputSpec: RuntimeSpecifier,
     OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
 {
