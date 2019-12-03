@@ -1,24 +1,19 @@
 use crate::{
-    components::anycomponent::AnyContext,
-    context::GetGlobalInput,
-    params::{HasStorage, ParamStorage, Possibly, Storage},
-    AnyComponent, AnyInputSpec, AnyOutputSpec, RuntimeSpecifier, SpecId, Value, ValueExt,
-    ValueIter,
+    components::{anycomponent::AnyContext, PossiblyEither},
+    context::{ContextMeta, GetGlobalInput},
+    params::{HasStorage, ParamStorage, Storage},
+    AnyComponent, AnyInputSpec, AnyOutputSpec, AnyParamSpec, RuntimeSpecifier, SpecId, Value,
+    ValueExt,
 };
 use arrayvec::ArrayVec;
 use fixed::types::{U0F32, U1F31};
 use fxhash::FxHashMap;
-use itertools::Either;
 use std::{
+    convert::TryInto,
     iter::ExactSizeIterator,
     marker::PhantomData,
     ops::{Index, IndexMut},
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ContextMeta {
-    pub samples: usize,
-}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ElementSpecifier<Id> {
@@ -151,8 +146,8 @@ impl<Id> GenericWire<marker::Input, Id> {
 }
 
 impl<Id> GenericWire<marker::Param, Id> {
-    fn param_id(&self) -> AnyInputSpec {
-        AnyInputSpec(self.io_index)
+    fn param_id(&self) -> AnyParamSpec {
+        AnyParamSpec(self.io_index)
     }
 }
 
@@ -362,9 +357,9 @@ where
 {
     pub fn update<Ctx>(&mut self, ctx: &Ctx)
     where
-        Ctx: GetGlobalInput<InputSpec>,
+        Ctx: GetGlobalInput<InputSpec> + ContextMeta,
     {
-        self.as_slice().update(ctx);
+        self.as_mut_slice().update(ctx);
     }
 
     // TODO: Return a result
@@ -373,24 +368,17 @@ where
         match dst.0 {
             WireDstInner::Input(dst) => match dst.element() {
                 ElementSpecifier::Component { id } => {
-                    *self.components[id]
-                        .inputs
-                        .refs_mut()
-                        .nth(dst.input_id().0)
-                        .unwrap() = Some(filled_output);
+                    *self.components[id].inputs.get_mut(dst.input_id()) = Some(filled_output);
                 }
                 ElementSpecifier::Rack => {
-                    *self.out_wires.refs_mut().nth(dst.input_id().0).unwrap() = Some(filled_output)
+                    *self
+                        .out_wires
+                        .get_mut(OutputSpec::from_id(dst.input_id().0)) = Some(filled_output)
                 }
             },
             WireDstInner::Param(val, dst) => match dst.element() {
                 ElementSpecifier::Component { id } => {
-                    *self.components[id]
-                        .params
-                        .refs_mut()
-                        .nth(dst.param_id().0)
-                        .unwrap()
-                        .1 = Some(ParamWire {
+                    *self.components[id].params.get_mut(dst.param_id()).1 = Some(ParamWire {
                         value: val,
                         src: filled_output,
                     })
@@ -407,15 +395,13 @@ where
         value: V,
     ) where
         <<C as AnyComponent>::ParamStorage as crate::params::ParamStorage<'a>>::RefMut:
-            crate::params::Possibly<&'a mut V>,
+            TryInto<&'a mut V>,
     {
         let (v, _) = self.components[component]
             .params
-            .refs_mut()
-            .nth(param.id())
-            .unwrap();
-        v.when_matches(|val: &mut _| *val = value)
-            .unwrap_or_else(|_| unimplemented!());
+            .get_mut(AnyParamSpec(param.id()));
+        let val: &mut V = v.try_into().unwrap_or_else(|_| unimplemented!());
+        *val = value;
     }
 
     pub fn new_component(&mut self, component: impl Into<C>) -> usize {
@@ -433,24 +419,30 @@ where
         out
     }
 
-    /// Get a specific output of this rack. This takes a mutable reference because it technically
-    /// isn't pure, but it _is_ idempotent.
+    /// Get a specific output of this rack.
     pub fn output<'a, Ctx: 'a>(
-        &'a mut self,
+        &'a self,
         spec: OutputSpec,
         ctx: &'a Ctx,
-    ) -> Option<impl ValueIter + Send>
+    ) -> Option<PossiblyEither<C::OutputIter, Ctx::Iter>>
     where
-        Ctx: GetGlobalInput<InputSpec>,
+        Ctx: GetGlobalInput<InputSpec> + ContextMeta,
     {
-        let wire = (*self.out_wires.refs().nth(spec.id()).unwrap())?;
+        let wire = (*self.out_wires.get(spec))?;
 
-        let out = self.as_slice().as_ref().output(wire, ctx);
+        let out = self.as_slice().output(wire, ctx);
 
         Some(out)
     }
 
-    fn as_slice(&mut self) -> RackSlice<&'_ mut ComponentVec<C>, InputSpec> {
+    fn as_slice(&self) -> RackSlice<&'_ ComponentVec<C>, InputSpec> {
+        RackSlice {
+            components: &self.components,
+            _marker: PhantomData::<InputSpec>,
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> RackSlice<&'_ mut ComponentVec<C>, InputSpec> {
         RackSlice {
             components: &mut self.components,
             _marker: PhantomData::<InputSpec>,
@@ -485,15 +477,25 @@ where
     cur: &'a TaggedComponent<C>,
 }
 
+impl<'a, Ctx, C, I> ContextMeta for RackContext<'a, Ctx, C, I>
+where
+    C: AnyComponent,
+    Ctx: ContextMeta,
+{
+    fn sample_rate(&self) -> u32 {
+        self.ctx.sample_rate()
+    }
+}
+
 impl<'a, Ctx, C, I> AnyContext for RackContext<'a, Ctx, C, I>
 where
     C: AnyComponent,
     I: RuntimeSpecifier,
-    Ctx: GetGlobalInput<I>,
+    Ctx: GetGlobalInput<I> + ContextMeta,
 {
     type ParamStorage = C::ParamStorage;
     type InputStorage = C::InputStorage;
-    type Iter = Either<C::OutputIter, Ctx::Iter>;
+    type Iter = PossiblyEither<C::OutputIter, Ctx::Iter>;
 
     fn params(&self) -> &Self::ParamStorage {
         &self.cur.params
@@ -509,17 +511,14 @@ where
 }
 
 pub trait Lerp: Sized {
-    fn lerp<I: ExactSizeIterator<Item = Value>>(
-        &self,
-        wire_value: &Value,
-        amount: Option<I>,
-    ) -> Self;
+    fn lerp<I: ExactSizeIterator<Item = Value>>(self, wire_value: Value, amount: Option<I>)
+        -> Self;
 }
 
 impl Lerp for Value {
     fn lerp<I: ExactSizeIterator<Item = Value>>(
-        &self,
-        wire_value: &Value,
+        self,
+        wire_value: Value,
         amount: Option<I>,
     ) -> Self {
         type UCont = U0F32;
@@ -579,14 +578,14 @@ where
 {
     fn update<Ctx>(&mut self, ctx: &Ctx)
     where
-        Ctx: GetGlobalInput<InputSpec>,
+        Ctx: GetGlobalInput<InputSpec> + ContextMeta,
     {
         for i in 0..self.components.len() {
             let new = {
                 let cur = &self.components[i];
 
                 cur.inner.update(&RackContext {
-                    ctx: ctx,
+                    ctx,
                     next: RackSlice {
                         components: &*self.components,
                         _marker: PhantomData::<InputSpec>,
@@ -600,54 +599,6 @@ where
     }
 }
 
-impl<C, InputSpec> RackSlice<&'_ mut ComponentVec<C>, InputSpec>
-where
-    C: AnyComponent,
-{
-    fn as_ref(&self) -> RackSlice<&ComponentVec<C>, InputSpec> {
-        RackSlice {
-            components: &*self.components,
-            _marker: PhantomData,
-        }
-    }
-}
-
-pub enum SimpleCow<'a, C> {
-    Borrowed(&'a C),
-    Owned(C),
-}
-
-impl<'a, C> SimpleCow<'a, C> {
-    pub fn as_ref(&self) -> &C {
-        match self {
-            Self::Borrowed(v) => v,
-            Self::Owned(v) => v,
-        }
-    }
-
-    pub fn to_owned(self) -> C
-    where
-        C: Clone,
-    {
-        match self {
-            Self::Borrowed(v) => C::clone(v),
-            Self::Owned(v) => v,
-        }
-    }
-}
-
-impl<C> From<C> for SimpleCow<'static, C> {
-    fn from(other: C) -> Self {
-        SimpleCow::Owned(other)
-    }
-}
-
-impl<'a, C> From<&'a C> for SimpleCow<'a, C> {
-    fn from(other: &'a C) -> Self {
-        SimpleCow::Borrowed(other)
-    }
-}
-
 impl<C, InputSpec> RackSlice<&'_ ComponentVec<C>, InputSpec>
 where
     C: AnyComponent,
@@ -657,9 +608,9 @@ where
         &'a self,
         Wire(wire): Wire<marker::Output>,
         ctx: &'a Ctx,
-    ) -> Either<C::OutputIter, Ctx::Iter>
+    ) -> PossiblyEither<C::OutputIter, Ctx::Iter>
     where
-        Ctx: GetGlobalInput<InputSpec>,
+        Ctx: GetGlobalInput<InputSpec> + ContextMeta,
     {
         match wire.element() {
             ElementSpecifier::Component { id } => {
@@ -677,12 +628,12 @@ where
                     },
                 );
 
-                Either::Left(out)
+                PossiblyEither::Left(out)
             }
-            ElementSpecifier::Rack => unimplemented!(), /*ctx
-                                                        .input(InputSpec::from_id(wire.io_index))
-                                                        .map(Either::Right)
-                                                        .unwrap(),*/
+            ElementSpecifier::Rack => ctx
+                .input(InputSpec::from_id(wire.io_index))
+                .map(PossiblyEither::Right)
+                .unwrap(),
         }
     }
 }

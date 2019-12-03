@@ -1,12 +1,11 @@
 use crate::{
-    components::NoIter,
-    context::GetGlobalInput,
-    params::{HasStorage, ParamStorage, Possibly},
-    rack::{self, InternalWire},
-    AnyComponent, AnyIter, Rack, RuntimeSpecifier, SpecId, Value, ValueIter, ValueKind,
+    components::{PossiblyIter, ValueIterImplHelper},
+    context::{ContextMeta, GetGlobalInput},
+    params::HasStorage,
+    rack::InternalWire,
+    AnyComponent, Rack, RuntimeSpecifier, SpecId, Value, ValueKind,
 };
 use fixed::types::I1F15;
-use nom_midi::MidiEventType;
 use rodio::Source;
 use std::borrow::Cow;
 
@@ -72,7 +71,7 @@ where
     OutputSpec: HasStorage<InternalWire>,
 {
     output_id: SpecId,
-    out_iter: Option<Box<dyn Iterator<Item = i16> + Send>>,
+    out_iter: Option<OutputIter<S, C, InputSpec, OutputSpec>>,
     sample_rate: u32,
     audio_inputs: S,
     rack: Rack<C, InputSpec, OutputSpec>,
@@ -146,13 +145,20 @@ where
 
 pub struct Context<'a> {
     sources: Cow<'a, [i16]>,
+    sample_rate: u32,
+}
+
+impl<'a> ContextMeta for Context<'a> {
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
 }
 
 impl<'a, InputSpec> GetGlobalInput<InputSpec> for Context<'a>
 where
     InputSpec: RuntimeSpecifier,
 {
-    type Iter = AnyIter<NoIter<MidiEventType>, std::vec::IntoIter<Value>>;
+    type Iter = <Value as ValueIterImplHelper<std::vec::IntoIter<Value>>>::AnyIter;
 
     // `None` means that this input is not wired
     fn input(&self, spec: InputSpec) -> Option<Self::Iter> {
@@ -164,17 +170,20 @@ where
             }
         }
 
-        Some(AnyIter::from(
+        Some(
             // TODO
             self.sources
                 [id as usize..(id + InputSpec::TYPES[spec.id()].channels.unwrap()) as usize]
                 .iter()
                 .map(|&val| Value::from_num(I1F15::from_bits(val)))
                 .collect::<Vec<_>>()
-                .into_iter(),
-        ))
+                .into_iter()
+                .into(),
+        )
     }
 }
+
+type OutputIter<S, C, InputSpec, OutputSpec> = impl ExactSizeIterator<Item = i16>;
 
 impl<S, C, InputSpec, OutputSpec> AudioStreamer<S, C, InputSpec, OutputSpec>
 where
@@ -183,7 +192,7 @@ where
     InputSpec: RuntimeSpecifier,
     OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
 {
-    fn update(&mut self) -> Option<impl ExactSizeIterator<Item = i16>> {
+    fn update(&mut self) -> Option<OutputIter<S, C, InputSpec, OutputSpec>> {
         // Originally this was done with a
         loop {
             let mut sources = vec![];
@@ -199,7 +208,10 @@ where
                 }
 
                 let sources = Cow::Borrowed(&sources[..]);
-                let ctx = Context { sources };
+                let ctx = Context {
+                    sample_rate: self.sample_rate(),
+                    sources,
+                };
 
                 self.rack.update::<Context>(&ctx);
             }
@@ -222,7 +234,10 @@ where
 
             if let Some(new_id) = new_id {
                 let sources = Cow::Owned(sources);
-                let ctx: Context<'static> = Context { sources };
+                let ctx: Context<'static> = Context {
+                    sample_rate: self.sample_rate(),
+                    sources,
+                };
 
                 self.output_id = new_id + 1;
 
@@ -230,9 +245,9 @@ where
                     iter: self
                         .rack
                         .output(OutputSpec::VALUES[new_id].clone(), &ctx)
-                        .map(|val| {
-                            val.analog()
-                                .unwrap()
+                        .map(|iter| {
+                            PossiblyIter::<Value>::try_iter(iter)
+                                .unwrap_or_else(|_| unimplemented!())
                                 .map(|val| I1F15::from_num(val).to_bits())
                         }),
                     min_len: OutputSpec::from_id(new_id).value_type().channels.unwrap() as usize,
@@ -261,7 +276,7 @@ where
         let mut new_iter = self.update()?;
         let out = new_iter.next();
         if new_iter.len() > 0 {
-            self.out_iter = Some(Box::new(new_iter));
+            self.out_iter = Some(new_iter);
         }
         out
     }

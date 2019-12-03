@@ -1,4 +1,6 @@
-#![feature(type_alias_impl_trait, specialization)]
+#![feature(trivial_bounds, type_alias_impl_trait, specialization)]
+// TODO: This warning is buggy when used with `feature(trivial_bounds)`
+#![allow(trivial_bounds)]
 
 // TODO: Remove all uses of `Vec`
 
@@ -14,11 +16,13 @@ pub mod params;
 pub mod rack;
 
 pub use components::{
-    AnyComponent, AnyInputSpec, AnyIter, AnyOutputSpec, AnyParamSpec, Component, GetOutput,
-    RuntimeSpecifier, SpecId, Types, ValueIter,
+    AnyComponent, AnyInputSpec, AnyOutputSpec, AnyParamSpec, Component, GetOutput,
+    RuntimeSpecifier, SpecId, Types,
 };
-pub use context::{GetInput, GetParam};
+pub use context::{Context, GetInput, GetParam};
 pub use rack::{ComponentId, Rack, Wire, WireDst, WireSrc};
+
+pub use nom_midi::MidiEventType as MidiValue;
 
 fn u_to_s(unsigned: U1F31) -> I1F31 {
     I1F31::from_bits(

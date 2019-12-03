@@ -1,6 +1,6 @@
 use octahack::{
     octahack_components::{
-        sine_synth::{freq, SineSynth, Specifier::IO as SynthIO},
+        synth::{freq, output::Specifier as Out, params::Specifier as Params, Synth},
         OctahackComponent,
     },
     Rack, Value, WireDst, WireSrc,
@@ -18,33 +18,31 @@ impl Default for self::any::Params {
     }
 }
 
-use self::any::Specifier;
-
 use rodio::Source;
 
 fn main() {
-    let mut rack = Rack::<OctahackComponent, Specifier, Specifier>::new();
+    let mut rack = Rack::<OctahackComponent, any::Specifier, any::Specifier>::new();
 
-    let modulator_modulator = rack.new_component(SineSynth::new());
-    let modulator = rack.new_component(SineSynth::new());
-    let carrier = rack.new_component(SineSynth::new());
+    let modulator_modulator = rack.new_component(Synth::new());
+    let modulator = rack.new_component(Synth::new());
+    let carrier = rack.new_component(Synth::new());
     rack.wire(
-        WireSrc::component_output(modulator_modulator, SynthIO),
-        WireDst::component_param(modulator, SynthIO, freq(55)),
+        WireSrc::component_output(modulator_modulator, Out::Saw),
+        WireDst::component_param(modulator, Params::Freq, freq(55)),
     );
     rack.wire(
-        WireSrc::component_output(modulator, SynthIO),
-        WireDst::component_param(carrier, SynthIO, freq(880 * 2)),
+        WireSrc::component_output(modulator, Out::Sine),
+        WireDst::component_param(carrier, Params::Freq, freq(880 * 2)),
     );
     rack.wire(
-        WireSrc::component_output(carrier, SynthIO),
-        WireDst::rack_output(Specifier::OneChannel),
+        WireSrc::component_output(carrier, Out::Square),
+        WireDst::rack_output(any::Specifier::OneChannel),
     );
-    rack.set_param::<_, Value>(modulator_modulator, SynthIO, freq(0.1));
-    rack.set_param::<_, Value>(modulator, SynthIO, freq(220));
-    rack.set_param::<_, Value>(carrier, SynthIO, freq(440));
+    rack.set_param::<_, Value>(modulator_modulator, Params::Freq, freq(0.5));
+    rack.set_param::<_, Value>(modulator, Params::Freq, freq(220));
+    rack.set_param::<_, Value>(carrier, Params::Freq, freq(440));
 
-    let mut streamer =
+    let streamer =
         octahack::output::AudioStreamer::new_convert(None, rack, rodio::source::SineWave::new(440))
             .convert_samples::<f32>();
 

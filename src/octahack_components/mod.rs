@@ -1,28 +1,26 @@
 use crate::Value;
 
 pub mod amplifier;
-pub mod sine_synth;
+pub mod synth;
 
 use amplifier::Amplifier;
-use sine_synth::SineSynth;
+use synth::Synth;
 
 crate::component_set! {
     pub mod octahack_component {
         Amplifier,
-        SineSynth
+        Synth
     }
 }
 
 pub use self::octahack_component::Component as OctahackComponent;
 
-/// Equals `0.02`, which is a convenient number for us.
-pub const VOLT: Value = Value::from_bits(0x28f5c29);
+/// Equals `0.02` for `fixed::I1F31`
+pub const VOLT: Value = Value::from_bits(0x02_8f_5c_29);
 
 #[cfg(test)]
 mod test {
-    use crate::{
-        AnyComponent, AnyIter, Rack, RuntimeSpecifier, Value, ValueIter, WireDst, WireSrc,
-    };
+    use crate::{AnyComponent, Rack, RuntimeSpecifier, Value, WireDst, WireSrc};
 
     crate::specs! {
         mod any {
@@ -41,7 +39,7 @@ mod test {
     #[test]
     fn correct_max_out_size() {
         assert_eq!(
-            super::amplifier::Specifier::TYPES.len(),
+            super::synth::output::Specifier::TYPES.len(),
             super::OctahackComponent::MAX_OUTPUT_COUNT
         );
     }

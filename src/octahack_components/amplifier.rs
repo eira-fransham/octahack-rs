@@ -1,4 +1,4 @@
-use crate::{AnyIter, Component, GetInput, GetOutput, GetParam, Value, ValueExt, ValueIter};
+use crate::{Component, Context, GetOutput, Value, ValueExt};
 use az::Az;
 
 crate::specs! {
@@ -7,10 +7,10 @@ crate::specs! {
     }
 }
 
-use self::amplifier::Only;
-pub use self::amplifier::Specifier;
+use amplifier::Only;
+pub use amplifier::Specifier;
 
-impl Default for self::amplifier::Params {
+impl Default for amplifier::Params {
     fn default() -> Self {
         Self {
             Only: Default::default(),
@@ -21,44 +21,37 @@ impl Default for self::amplifier::Params {
 #[derive(Copy, Clone)]
 pub struct Amplifier;
 
-type OutputIter = impl ValueIter + Send;
-
 impl Component for Amplifier {
     type InputSpecifier = Specifier;
     type OutputSpecifier = Specifier;
     type ParamSpecifier = Specifier;
-    type OutputIter = OutputIter;
 
     fn update<Ctx>(&self, _: &Ctx) -> Self
     where
-        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::OutputSpecifier>,
+        Ctx: Context<Self>,
     {
         *self
     }
 }
 
-impl GetOutput<self::amplifier::Only> for Amplifier {
-    fn output<Ctx>(&self, ctx: &Ctx) -> OutputIter
+impl GetOutput<amplifier::Only> for Amplifier {
+    type Iter = impl ExactSizeIterator<Item = Value> + Send;
+
+    fn output<Ctx>(&self, ctx: &Ctx) -> Self::Iter
     where
-        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::OutputSpecifier>,
+        Ctx: Context<Self>,
     {
-        AnyIter::from(
-            ctx.input::<Only>()
-                .map(|inputs| {
-                    {
-                        inputs
-                            .analog()
-                            .unwrap()
-                            .map(|to_multiply| {
-                                Value::saturating_from_num(
-                                    to_multiply.az::<f32>() * ctx.param().to_u().az::<f32>(),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    }
-                })
-                .unwrap_or(vec![])
-                .into_iter(),
-        )
+        let inputs = if let Some(inputs) = ctx.input::<Only>() {
+            inputs
+        } else {
+            return Vec::<Value>::new().into_iter().into();
+        };
+
+        inputs
+            .map(|to_multiply| {
+                Value::saturating_from_num(to_multiply.az::<f32>() * ctx.param().to_u().az::<f32>())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 }

@@ -2,7 +2,7 @@ pub mod anycomponent;
 
 pub use anycomponent::{AnyComponent, AnyInputSpec, AnyOutputSpec, AnyParamSpec, Types};
 
-use crate::{params::Specifier, GetInput, GetParam, Value, ValueType};
+use crate::{Context, Value, ValueType};
 use itertools::Either;
 use nom_midi::MidiEventType;
 
@@ -35,56 +35,37 @@ impl RuntimeSpecifier for ! {
 }
 
 pub trait Component: Sized {
-    type InputSpecifier: Specifier;
-    type OutputSpecifier: Specifier;
-    type ParamSpecifier: Specifier;
-    // TODO: Use GATs to allow adapators to be used internally.
-    type OutputIter: ValueIter + Send;
+    type InputSpecifier;
+    type OutputSpecifier;
+    type ParamSpecifier;
 
     fn update<Ctx>(&self, _ctx: &Ctx) -> Self
     where
-        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
+        Ctx: Context<Self>;
 }
 
-pub trait GetOutput<RuntimeSpecifier>: Component {
-    fn output<Ctx>(&self, ctx: &Ctx) -> Self::OutputIter
+pub trait GetOutput<Spec: crate::params::Key>: Component {
+    type Iter: ExactSizeIterator<Item = Spec::Value>;
+
+    fn output<Ctx>(&self, ctx: &Ctx) -> Self::Iter
     where
-        Ctx: GetInput<Self::InputSpecifier> + GetParam<Self::ParamSpecifier>;
+        Ctx: Context<Self>;
 }
 
 // TODO: Support MIDI inputs
 
-pub trait ValueIter: PossiblyIter<MidiEventType> + PossiblyIter<Value> {
-    type Midi: ExactSizeIterator<Item = MidiEventType> + Send;
-    type Analog: ExactSizeIterator<Item = Value> + Send;
-
-    fn midi(self) -> Option<Self::Midi>;
-    fn analog(self) -> Option<Self::Analog>;
-}
-
-impl<T> ValueIter for T
-where
-    T: PossiblyIter<MidiEventType> + PossiblyIter<Value>,
-{
-    type Midi = <T as PossiblyIter<MidiEventType>>::Iter;
-    type Analog = <T as PossiblyIter<Value>>::Iter;
-
-    fn midi(self) -> Option<Self::Midi> {
-        <Self as PossiblyIter<MidiEventType>>::try_iter(self).ok()
-    }
-
-    fn analog(self) -> Option<Self::Analog> {
-        <Self as PossiblyIter<Value>>::try_iter(self).ok()
-    }
-}
-
 pub trait PossiblyIter<T>: Sized {
-    type Iter: ExactSizeIterator<Item = T> + Send;
+    type Iter: ExactSizeIterator<Item = T>;
 
     fn try_iter(self) -> Result<Self::Iter, Self>;
 }
 
-impl<A, B, T> PossiblyIter<T> for Either<A, B>
+pub enum PossiblyEither<A, B> {
+    Left(A),
+    Right(B),
+}
+
+impl<A, B, T> PossiblyIter<T> for PossiblyEither<A, B>
 where
     A: PossiblyIter<T>,
     B: PossiblyIter<T>,
@@ -93,8 +74,14 @@ where
 
     fn try_iter(self) -> Result<Self::Iter, Self> {
         match self {
-            Self::Left(val) => val.try_iter().map(Either::Left).map_err(Either::Left),
-            Self::Right(val) => val.try_iter().map(Either::Right).map_err(Either::Right),
+            Self::Left(val) => val
+                .try_iter()
+                .map(Either::Left)
+                .map_err(PossiblyEither::Left),
+            Self::Right(val) => val
+                .try_iter()
+                .map(Either::Right)
+                .map_err(PossiblyEither::Right),
         }
     }
 }
@@ -102,7 +89,7 @@ where
 /// Implementation detail since Rust doesn't take associated types into account when checking whether
 /// two implementations overlap.
 pub trait ValueIterImplHelper<T> {
-    type AnyIter: ValueIter + Send;
+    type AnyIter: PossiblyIter<Value> + PossiblyIter<MidiEventType>;
 
     fn mk_valueiter(other: T) -> Self::AnyIter;
 }
@@ -124,14 +111,14 @@ impl<T> ExactSizeIterator for NoIter<T> {
     }
 }
 
-impl<T: ExactSizeIterator<Item = MidiEventType> + Send> ValueIterImplHelper<T> for MidiEventType {
+impl<T: ExactSizeIterator<Item = MidiEventType>> ValueIterImplHelper<T> for MidiEventType {
     type AnyIter = AnyIter<T, NoIter<Value>>;
     fn mk_valueiter(other: T) -> Self::AnyIter {
         AnyIter(AnyIterInner::Midi(other))
     }
 }
 
-impl<T: ExactSizeIterator<Item = Value> + Send> ValueIterImplHelper<T> for Value {
+impl<T: ExactSizeIterator<Item = Value>> ValueIterImplHelper<T> for Value {
     type AnyIter = AnyIter<NoIter<MidiEventType>, T>;
 
     fn mk_valueiter(other: T) -> Self::AnyIter {
@@ -141,8 +128,8 @@ impl<T: ExactSizeIterator<Item = Value> + Send> ValueIterImplHelper<T> for Value
 
 impl<A, B, V> From<V> for AnyIter<A, B>
 where
-    A: ExactSizeIterator<Item = MidiEventType> + Send,
-    B: ExactSizeIterator<Item = Value> + Send,
+    A: ExactSizeIterator<Item = MidiEventType>,
+    B: ExactSizeIterator<Item = Value>,
     V: ExactSizeIterator,
     V::Item: ValueIterImplHelper<V, AnyIter = AnyIter<A, B>>,
 {
@@ -153,6 +140,24 @@ where
 
 pub struct AnyIter<A, B>(AnyIterInner<A, B>);
 
+impl<A> Default for AnyIter<A, NoIter<Value>>
+where
+    A: Default,
+{
+    fn default() -> Self {
+        AnyIter(AnyIterInner::Midi(A::default()))
+    }
+}
+
+impl<B> Default for AnyIter<NoIter<MidiEventType>, B>
+where
+    B: Default,
+{
+    fn default() -> Self {
+        AnyIter(AnyIterInner::Analog(B::default()))
+    }
+}
+
 enum AnyIterInner<A, B> {
     Midi(A),
     Analog(B),
@@ -160,7 +165,7 @@ enum AnyIterInner<A, B> {
 
 impl<A, B> PossiblyIter<MidiEventType> for AnyIter<A, B>
 where
-    A: ExactSizeIterator<Item = MidiEventType> + Send,
+    A: ExactSizeIterator<Item = MidiEventType>,
 {
     type Iter = A;
 
@@ -174,7 +179,7 @@ where
 
 impl<A, B> PossiblyIter<Value> for AnyIter<A, B>
 where
-    B: ExactSizeIterator<Item = Value> + Send,
+    B: ExactSizeIterator<Item = Value>,
 {
     type Iter = B;
 
