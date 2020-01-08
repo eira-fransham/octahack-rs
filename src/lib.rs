@@ -1,4 +1,4 @@
-#![feature(trivial_bounds, type_alias_impl_trait, specialization)]
+#![feature(trivial_bounds, type_alias_impl_trait, specialization, never_type)]
 // TODO: This warning is buggy when used with `feature(trivial_bounds)`
 #![allow(trivial_bounds)]
 

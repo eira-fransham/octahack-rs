@@ -1,6 +1,7 @@
 use crate::Value;
 
 pub mod amplifier;
+// pub mod file_player;
 pub mod midi_expander;
 pub mod synth;
 

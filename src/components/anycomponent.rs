@@ -2,7 +2,7 @@ use crate::{
     components::PossiblyIter,
     context::ContextMeta,
     params::{ParamStorage, Storage},
-    rack::{marker, InternalParamWire, InternalWire, Wire},
+    rack::{marker, InternalWire, Wire},
     SpecId, Value, ValueType,
 };
 use nom_midi::MidiEventType;
@@ -21,7 +21,7 @@ macro_rules! component_set {
             #[derive(TryInto)]
             #[try_into(owned, ref, ref_mut)]
             pub enum ParamStorage {
-                $($t(<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::HasParamStorage<$crate::rack::InternalParamWire>>::Storage)),*
+                $($t(<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::HasParamStorage>::Storage)),*
             }
 
             #[derive(TryInto)]
@@ -55,58 +55,31 @@ macro_rules! component_set {
                 }
             }
 
-            impl<'a> $crate::params::ParamStorage<'a> for ParamStorage {
-                type Extra = $crate::rack::InternalParamWire;
+            impl $crate::params::ParamStorage for ParamStorage {
                 type Specifier = $crate::AnyParamSpec;
-                type Ref = ParamRef<'a>;
-                type RefMut = ParamRefMut<'a>;
 
-                fn get(&'a self, spec: Self::Specifier) -> (Self::Ref, &'a Self::Extra) {
+                fn get(&self, spec: Self::Specifier) -> (&dyn std::any::Any, &dyn std::any::Any) {
                     match self {
                         $(
                             Self::$t(inner) => {
                                 let (r, e) = inner.get($crate::RuntimeSpecifier::from_id(spec.0));
 
-                                (ParamRef::$t(r), e)
+                                (r, e)
                             },
                         )*
                     }
                 }
 
-                fn get_mut(&'a mut self, spec: Self::Specifier) -> (Self::RefMut, &'a mut Self::Extra) {
+                fn get_mut(&mut self, spec: Self::Specifier) -> (&mut dyn std::any::Any, &mut dyn std::any::Any) {
                     match self {
                         $(
                             Self::$t(inner) => {
                                 let (r, e) = inner.get_mut($crate::RuntimeSpecifier::from_id(spec.0));
 
-                                (ParamRefMut::$t(r), e)
+                                (r, e)
                             },
                         )*
                     }
-                }
-            }
-
-            pub enum ParamRef<'a> {
-                $($t(<<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::HasParamStorage<$crate::rack::InternalParamWire>>::Storage as $crate::params::ParamStorage<'a>>::Ref)),*
-            }
-
-            pub enum ParamRefMut<'a> {
-                $($t(<<<super::$t as $crate::Component>::ParamSpecifier as $crate::params::HasParamStorage<$crate::rack::InternalParamWire>>::Storage as $crate::params::ParamStorage<'a>>::RefMut)),*
-            }
-
-            impl<'a> std::convert::TryFrom<ParamRef<'a>> for &'a $crate::Value {
-                type Error = ((), ParamRef<'a>);
-
-                fn try_from(other: ParamRef<'a>) -> Result<Self, Self::Error> {
-                    match other { $( ParamRef::$t(val) => { <&'a $crate::Value>::try_from(val).map_err(|(_, v)| ((), ParamRef::$t(v))) }, )* }
-                }
-            }
-
-            impl<'a> std::convert::TryFrom<ParamRefMut<'a>> for &'a mut $crate::Value {
-                type Error = ((), ParamRefMut<'a>);
-
-                fn try_from(other: ParamRefMut<'a>) -> Result<Self, Self::Error> {
-                    match other { $( ParamRefMut::$t(val) => { <&'a mut $crate::Value>::try_from(val).map_err(|(_, v)| ((), ParamRefMut::$t(v))) }, )* }
                 }
             }
 
@@ -292,7 +265,7 @@ pub trait AnyContext {
 pub trait AnyComponent: Sized {
     const MAX_OUTPUT_COUNT: usize;
 
-    type ParamStorage: for<'a> ParamStorage<'a, Specifier = AnyParamSpec, Extra = InternalParamWire>;
+    type ParamStorage: ParamStorage<Specifier = AnyParamSpec>;
     type InputStorage: Storage<Specifier = AnyInputSpec, Inner = InternalWire>;
 
     type OutputIter: PossiblyIter<Value> + PossiblyIter<MidiEventType>;

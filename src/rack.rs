@@ -3,14 +3,9 @@ use crate::{
     context::{ContextMeta, GetGlobalInput},
     params::{HasStorage, ParamStorage, Storage},
     AnyComponent, AnyInputSpec, AnyOutputSpec, AnyParamSpec, RuntimeSpecifier, SpecId, Value,
-    ValueExt,
 };
-use arrayvec::ArrayVec;
-use fixed::types::{U0F32, U1F31};
 use fxhash::FxHashMap;
 use std::{
-    convert::TryInto,
-    iter::ExactSizeIterator,
     marker::PhantomData,
     ops::{Index, IndexMut},
 };
@@ -258,12 +253,6 @@ where
         new_id
     }
 
-    fn clear(&mut self) {
-        self.storage.clear();
-        self.indices.clear();
-        self.ids = Default::default();
-    }
-
     fn ids(&self) -> &[ComponentId] {
         &self.indices
     }
@@ -384,7 +373,12 @@ where
             },
             WireDstInner::Param(val, dst) => match dst.element() {
                 ElementSpecifier::Component { id } => {
-                    *self.components[id].params.get_mut(dst.param_id()).1 = Some(ParamWire {
+                    *self.components[id]
+                        .params
+                        .get_mut(dst.param_id())
+                        .1
+                        .downcast_mut::<InternalParamWire>()
+                        .unwrap() = Some(ParamWire {
                         value: val,
                         src: filled_output,
                     })
@@ -394,19 +388,16 @@ where
         }
     }
 
-    pub fn set_param<'a, S: RuntimeSpecifier, V: 'a>(
-        &'a mut self,
+    pub fn set_param<S: RuntimeSpecifier, V: 'static>(
+        &mut self,
         component: usize,
         param: S,
         value: V,
-    ) where
-        <<C as AnyComponent>::ParamStorage as crate::params::ParamStorage<'a>>::RefMut:
-            TryInto<&'a mut V>,
-    {
+    ) {
         let (v, _) = self.components[component]
             .params
             .get_mut(AnyParamSpec(param.id()));
-        let val: &mut V = v.try_into().unwrap_or_else(|_| unimplemented!());
+        let val = v.downcast_mut::<V>().expect("Incorrect param type");
         *val = value;
     }
 
@@ -514,67 +505,6 @@ where
     fn read_wire(&self, wire: Wire<marker::Output>) -> Self::Iter {
         self.next.output(wire, self.ctx)
     }
-}
-
-pub trait Lerp: Sized {
-    fn lerp<I: ExactSizeIterator<Item = Value>>(self, wire_value: Value, amount: Option<I>)
-        -> Self;
-}
-
-impl Lerp for Value {
-    fn lerp<I: ExactSizeIterator<Item = Value>>(
-        self,
-        wire_value: Value,
-        amount: Option<I>,
-    ) -> Self {
-        type UCont = U0F32;
-
-        let amount = amount.unwrap();
-
-        fn remap_0_1(val: U1F31) -> U0F32 {
-            U0F32::from_bits(val.to_bits())
-        }
-
-        fn remap_0_2(val: U0F32) -> U1F31 {
-            U1F31::from_bits(val.to_bits())
-        }
-
-        let wire_value = remap_0_1(wire_value.to_u());
-        let average_output_this_tick: UCont = average_fixed(amount.map(|o| remap_0_1(o.to_u())));
-        let unat = remap_0_1(self.to_u());
-
-        // Weighted average: wire value == max means out is `average_output_this_tick`,
-        // wire value == min means out is `unat`, and values between those extremes lerp
-        // between the two.
-        Value::from_u(remap_0_2(
-            (unat * (UCont::max_value() - average_output_this_tick))
-                + wire_value * average_output_this_tick,
-        ))
-    }
-}
-
-/// Improves precision (and possibly performance, too) by waiting as long as possible to do division.
-/// If we overflow 36 (I believe?) bits total then it crashes, but I believe that it's OK to assume
-/// that doesn't happen.
-fn average_fixed<I>(iter: I) -> U0F32
-where
-    I: ExactSizeIterator<Item = U0F32>,
-{
-    let len = iter.len() as u32;
-
-    let mut cur = ArrayVec::<[U0F32; 4]>::new();
-    let mut acc = U0F32::default();
-
-    for i in iter {
-        if let Some(new) = acc.checked_add(i) {
-            acc = new;
-        } else {
-            cur.push(acc);
-            acc = i;
-        }
-    }
-
-    acc / len + cur.into_iter().map(|c| c / len).sum::<U0F32>()
 }
 
 impl<C, InputSpec> RackSlice<&'_ mut ComponentVec<C>, InputSpec>

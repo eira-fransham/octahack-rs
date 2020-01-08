@@ -1,7 +1,7 @@
 use crate::{
     components::{anycomponent::AnyContext, PossiblyIter},
-    params::{HasParamStorage, HasStorage, Key, ParamStorageGet, StorageGet},
-    rack::{InternalParamWire, InternalWire, Lerp, ParamWire},
+    params::{HasParamStorage, HasStorage, Key, Param, ParamStorageGet, StorageGet},
+    rack::InternalWire,
     Component, Value,
 };
 use nom_midi::MidiEventType;
@@ -53,17 +53,29 @@ pub trait GetInput<Spec> {
         Self::Iter: PossiblyIter<T::Value>;
 }
 
-pub trait GetParam<Spec> {
+pub trait GetParam<Spec: HasParamStorage> {
     fn param<T: Key>(&self) -> T::Value
     where
-        Spec: HasParamStorage<InternalParamWire>,
-        Spec::Storage: ParamStorageGet<T, Extra = InternalParamWire, Output = T::Value>,
-        T::Value: Clone + crate::rack::Lerp;
+        Spec::Storage: ParamStorageGet<T>,
+        T::Value: Param;
 }
 
 pub trait ContextMeta {
     /// Samples per second
     fn sample_rate(&self) -> u32;
+}
+
+pub trait ContextMetaExt: ContextMeta {
+    fn sample_duration(&self) -> Duration;
+}
+
+impl<T> ContextMetaExt for T
+where
+    T: ContextMeta,
+{
+    fn sample_duration(&self) -> Duration {
+        Duration::from_secs(1) / self.sample_rate()
+    }
 }
 
 pub trait Context<C: Component>:
@@ -134,18 +146,15 @@ where
 impl<'a, Ctx, C> GetParam<C::ParamSpecifier> for ContextForComponent<'a, Ctx, C>
 where
     C: Component,
-    C::ParamSpecifier: HasParamStorage<InternalParamWire>,
     Ctx: AnyContext,
     Ctx::Iter: PossiblyIter<Value>,
     for<'any> &'any Ctx::ParamStorage:
-        TryInto<&'any <C::ParamSpecifier as HasParamStorage<InternalParamWire>>::Storage>,
+        TryInto<&'any <C::ParamSpecifier as HasParamStorage>::Storage>,
 {
     fn param<T: Key>(&self) -> T::Value
     where
-        C::ParamSpecifier: HasParamStorage<InternalParamWire>,
-        <C::ParamSpecifier as HasParamStorage<InternalParamWire>>::Storage:
-            ParamStorageGet<T, Extra = InternalParamWire, Output = T::Value>,
-        T::Value: Clone + crate::rack::Lerp,
+        <C::ParamSpecifier as HasParamStorage>::Storage: ParamStorageGet<T>,
+        T::Value: Param,
     {
         let (nat_val, wire) = self
             .ctx
@@ -154,12 +163,6 @@ where
             .unwrap_or_else(|_| unreachable!())
             .get();
 
-        wire.as_ref()
-            .map(|ParamWire { src, value }| {
-                nat_val
-                    .clone()
-                    .lerp(*value, self.ctx.read_wire(*src).try_iter().ok())
-            })
-            .unwrap_or(nat_val.clone())
+        nat_val.access(wire, self.ctx)
     }
 }

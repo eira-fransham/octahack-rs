@@ -29,7 +29,7 @@ impl RuntimeSpecifier for ! {
         unreachable!()
     }
 
-    fn from_id(id: SpecId) -> Self {
+    fn from_id(_: SpecId) -> Self {
         unreachable!()
     }
 }
@@ -37,7 +37,7 @@ impl RuntimeSpecifier for ! {
 pub trait Component: Sized {
     type InputSpecifier;
     type OutputSpecifier;
-    type ParamSpecifier;
+    type ParamSpecifier: crate::params::HasParamStorage;
 
     fn update<Ctx>(&self, _ctx: &Ctx) -> Self
     where

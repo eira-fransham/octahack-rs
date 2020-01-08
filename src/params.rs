@@ -1,13 +1,11 @@
 use crate::{context::Context, Component};
+use std::any::Any;
 
-pub trait ParamStorage<'a> {
-    type Ref;
-    type RefMut;
+pub trait ParamStorage {
     type Specifier;
-    type Extra;
 
-    fn get(&'a self, spec: Self::Specifier) -> (Self::Ref, &'a Self::Extra);
-    fn get_mut(&'a mut self, spec: Self::Specifier) -> (Self::RefMut, &'a mut Self::Extra);
+    fn get(&self, spec: Self::Specifier) -> (&dyn Any, &dyn Any);
+    fn get_mut(&mut self, spec: Self::Specifier) -> (&mut dyn Any, &mut dyn Any);
 }
 
 pub trait Storage {
@@ -35,13 +33,102 @@ pub trait HasStorage<T>: Sized {
     type Storage: Storage<Specifier = Self, Inner = T>;
 }
 
-pub trait HasParamStorage<T>: Sized {
-    type Storage: for<'a> ParamStorage<'a, Specifier = Self, Extra = T>;
+pub trait HasParamStorage: Sized {
+    type Storage: ParamStorage<Specifier = Self>;
 }
 
-impl<T: 'static> HasParamStorage<T> for ! {
-    type Storage = EmptyStorage<T>;
+pub trait Param {
+    type Extra: Default;
+
+    fn access<Ctx>(&self, storage: &Self::Extra, ctx: &Ctx) -> Self
+    where
+        Ctx: crate::components::anycomponent::AnyContext;
 }
+
+impl Param for crate::MidiValue {
+    type Extra = ();
+
+    fn access<Ctx>(&self, _: &(), _: &Ctx) -> Self
+    where
+        Ctx: crate::components::anycomponent::AnyContext,
+    {
+        *self
+    }
+}
+
+impl Param for crate::Value {
+    type Extra = crate::rack::InternalParamWire;
+
+    fn access<Ctx>(&self, wire: &Self::Extra, ctx: &Ctx) -> Self
+    where
+        Ctx: crate::components::anycomponent::AnyContext,
+    {
+        use crate::{rack::ParamWire, ValueExt};
+        use arrayvec::ArrayVec;
+        use fixed::types::{U0F32, U1F31};
+
+        /// Improves precision (and possibly performance, too) by waiting as long as possible to do division.
+        /// If we overflow 36 (I believe?) bits total then it crashes, but I believe that it's OK to assume
+        /// that doesn't happen.
+        fn average_fixed<I>(iter: I) -> U0F32
+        where
+            I: ExactSizeIterator<Item = U0F32>,
+        {
+            let len = iter.len() as u32;
+
+            let mut cur = ArrayVec::<[U0F32; 4]>::new();
+            let mut acc = U0F32::default();
+
+            for i in iter {
+                if let Some(new) = acc.checked_add(i) {
+                    acc = new;
+                } else {
+                    cur.push(acc);
+                    acc = i;
+                }
+            }
+
+            acc / len + cur.into_iter().map(|c| c / len).sum::<U0F32>()
+        }
+
+        type UCont = U0F32;
+
+        if let Some(ParamWire { src, value }) = wire {
+            let amount = ctx.read_wire(*src);
+
+            fn remap_0_1(val: U1F31) -> U0F32 {
+                U0F32::from_bits(val.to_bits())
+            }
+
+            fn remap_0_2(val: U0F32) -> U1F31 {
+                U1F31::from_bits(val.to_bits())
+            }
+
+            let wire_value = remap_0_1(value.to_u());
+            let average_output_this_tick: UCont = average_fixed(
+                crate::components::PossiblyIter::<crate::Value>::try_iter(amount)
+                    .unwrap_or_else(|_| unimplemented!())
+                    .map(|o| remap_0_1(o.to_u())),
+            );
+            let unat = remap_0_1(self.to_u());
+
+            // Weighted average: wire value == max means out is `average_output_this_tick`,
+            // wire value == min means out is `unat`, and values between those extremes lerp
+            // between the two.
+            Self::from_u(remap_0_2(
+                (unat * (UCont::max_value() - average_output_this_tick))
+                    + wire_value * average_output_this_tick,
+            ))
+        } else {
+            *self
+        }
+    }
+}
+
+impl HasParamStorage for ! {
+    type Storage = EmptyParamStorage;
+}
+
 impl<T: 'static> HasStorage<T> for ! {
     type Storage = EmptyStorage<T>;
 }
@@ -58,17 +145,19 @@ impl<T> Default for EmptyStorage<T> {
     }
 }
 
-impl<'a, T: 'a> ParamStorage<'a> for EmptyStorage<T> {
-    type Ref = !;
-    type RefMut = !;
-    type Specifier = !;
-    type Extra = T;
+#[derive(Default)]
+pub struct EmptyParamStorage {
+    _noconstruct: (),
+}
 
-    fn get(&self, _: Self::Specifier) -> (Self::Ref, &Self::Extra) {
+impl ParamStorage for EmptyParamStorage {
+    type Specifier = !;
+
+    fn get(&self, _: Self::Specifier) -> (&dyn Any, &dyn Any) {
         unreachable!()
     }
 
-    fn get_mut(&mut self, _: Self::Specifier) -> (Self::RefMut, &mut Self::Extra) {
+    fn get_mut(&mut self, _: Self::Specifier) -> (&mut dyn Any, &mut dyn Any) {
         unreachable!()
     }
 }
@@ -86,12 +175,13 @@ impl<V> Storage for EmptyStorage<V> {
     }
 }
 
-pub trait ParamStorageGet<V> {
-    type Output;
-    type Extra;
-
-    fn get(&self) -> (&Self::Output, &Self::Extra);
-    fn get_mut(&mut self) -> (&mut Self::Output, &mut Self::Extra);
+pub trait ParamStorageGet<V>
+where
+    V: Key,
+    V::Value: Param,
+{
+    fn get(&self) -> (&V::Value, &<V::Value as Param>::Extra);
+    fn get_mut(&mut self) -> (&mut V::Value, &mut <V::Value as Param>::Extra);
 }
 
 pub trait StorageGet<V>: Storage {
@@ -108,8 +198,6 @@ macro_rules! specs {
     ($( $v:vis mod $modname:ident { $($key:ident : $value:ty),* } )*) => {
         $(
             $v mod $modname {
-                use $crate::derive_more::TryInto;
-
                 #[derive(Copy, Clone, PartialEq, Eq)]
                 pub enum Specifier {
                     $( $key, )*
@@ -200,8 +288,8 @@ macro_rules! specs {
                     }
                 }
 
-                impl<T: 'static> $crate::params::HasParamStorage<T> for Specifier {
-                    type Storage = ParamsWithExtra<T>;
+                impl $crate::params::HasParamStorage for Specifier {
+                    type Storage = ParamsWithExtra;
                 }
 
                 impl<T: 'static> $crate::params::HasStorage<T> for Specifier {
@@ -276,12 +364,12 @@ macro_rules! specs {
                 }
 
                 #[allow(non_snake_case)]
-                pub struct ParamsWithExtra<T> {
+                pub struct ParamsWithExtra {
                     params: Params,
-                    extra: Extra<T>,
+                    extra: Extra,
                 }
 
-                impl<T> Default for ParamsWithExtra<T> where T: Default, Params: Default, {
+                impl Default for ParamsWithExtra where Params: Default, {
                     fn default() -> Self {
                         Self {
                             params: Default::default(),
@@ -292,9 +380,9 @@ macro_rules! specs {
 
                 #[allow(non_snake_case)]
                 #[derive(Default)]
-                struct Extra<T> {
+                struct Extra {
                     $(
-                        $key : T,
+                        $key : <$value as $crate::params::Param>::Extra,
                     )*
                 }
 
@@ -306,15 +394,18 @@ macro_rules! specs {
                 }
 
                 $(
-                    impl<T> $crate::params::ParamStorageGet<$key> for ParamsWithExtra<T> {
-                        type Output = $value;
-                        type Extra = T;
-
-                        fn get(&self) -> (&Self::Output, &Self::Extra) {
+                    impl $crate::params::ParamStorageGet<$key> for ParamsWithExtra {
+                        fn get(&self) -> (
+                            &<$key as $crate::params::Key>::Value,
+                            &<<$key as $crate::params::Key>::Value as $crate::params::Param>::Extra
+                        ) {
                             (&self.params.$key, &self.extra.$key)
                         }
 
-                        fn get_mut(&mut self) -> (&mut Self::Output, &mut Self::Extra) {
+                        fn get_mut(&mut self) -> (
+                            &mut <$key as $crate::params::Key>::Value,
+                            &mut <<$key as $crate::params::Key>::Value as $crate::params::Param>::Extra
+                        ) {
                             (&mut self.params.$key, &mut self.extra.$key)
                         }
                     }
@@ -330,41 +421,24 @@ macro_rules! specs {
                     }
                 )*
 
-                #[derive(TryInto)]
-                pub enum Ref<'a> {
-                    $(
-                        $key(&'a $value)
-                    ),*
-                }
-
-                #[derive(TryInto)]
-                pub enum RefMut<'a> {
-                    $(
-                        $key(&'a mut $value)
-                    ),*
-                }
-
-                impl<'a, T: 'a> $crate::params::ParamStorage<'a> for ParamsWithExtra<T> {
-                    type Ref = Ref<'a>;
-                    type RefMut = RefMut<'a>;
-                    type Extra = T;
+                impl $crate::params::ParamStorage for ParamsWithExtra {
                     type Specifier = Specifier;
 
-                    fn get(&'a self, spec: Self::Specifier) -> (Self::Ref, &'a Self::Extra) {
+                    fn get(&self, spec: Self::Specifier) -> (&dyn std::any::Any, &dyn std::any::Any) {
                         match spec {
                             $(
                                 Specifier::$key => {
-                                    (Ref::$key(&self.params.$key), &self.extra.$key)
+                                    (&self.params.$key, &self.extra.$key)
                                 },
                             )*
                         }
                     }
 
-                    fn get_mut(&'a mut self, spec: Self::Specifier) -> (Self::RefMut, &'a mut Self::Extra) {
+                    fn get_mut(&mut self, spec: Self::Specifier) -> (&mut dyn std::any::Any, &mut dyn std::any::Any) {
                         match spec {
                             $(
                                 Specifier::$key => {
-                                    (RefMut::$key(&mut self.params.$key), &mut self.extra.$key)
+                                    (&mut self.params.$key, &mut self.extra.$key)
                                 },
                             )*
                         }
@@ -377,7 +451,6 @@ macro_rules! specs {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::*;
 
     specs! {
@@ -394,27 +467,5 @@ mod tests {
                 B: MidiValue::ChannelPressure(0),
             }
         }
-    }
-
-    #[test]
-    fn test_params() {
-        type S = <foo::Specifier as HasParamStorage<bool>>::Storage;
-
-        let mut storage = S::default();
-
-        let (a, b) = <S as ParamStorageGet<foo::A>>::get_mut(&mut storage);
-        *a = Value::saturating_from_num(-1);
-        *b = true;
-        let (a, b) = <S as ParamStorageGet<foo::B>>::get_mut(&mut storage);
-        *a = MidiValue::ChannelPressure(1);
-        *b = true;
-        assert_eq!(
-            <S as ParamStorageGet<foo::A>>::get(&storage),
-            (&Value::saturating_from_num(-1), &true)
-        );
-        assert_eq!(
-            <S as ParamStorageGet<foo::B>>::get(&storage),
-            (&MidiValue::ChannelPressure(1), &true)
-        );
     }
 }
