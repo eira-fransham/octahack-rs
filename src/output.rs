@@ -9,6 +9,16 @@ use fixed::types::I1F15;
 use rodio::Source;
 use std::borrow::Cow;
 
+trait Sources<'a> {
+    type Iter;
+
+    fn total_channels<T>(&'a self) -> Option<usize>
+    where
+        Self::Iter: PossiblyIter<T>;
+
+    fn next(&'a mut self) -> Self::Iter;
+}
+
 fn num_audio_channels<Spec>() -> u8
 where
     Spec: RuntimeSpecifier,
@@ -193,7 +203,6 @@ where
     OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
 {
     fn update(&mut self) -> Option<OutputIter<S, C, InputSpec, OutputSpec>> {
-        // Originally this was done with a
         loop {
             let mut sources = vec![];
             if self.output_id == 0 {
@@ -244,7 +253,7 @@ where
                 return Some(OrZero {
                     iter: self
                         .rack
-                        .output(OutputSpec::VALUES[new_id].clone(), &ctx)
+                        .output(OutputSpec::from_id(new_id), &ctx)
                         .map(|iter| {
                             PossiblyIter::<Value>::try_iter(iter)
                                 .unwrap_or_else(|_| unimplemented!())

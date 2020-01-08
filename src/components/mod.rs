@@ -9,19 +9,15 @@ use nom_midi::MidiEventType;
 // TODO: This can probably be `u8`
 pub type SpecId = usize;
 
-pub trait RuntimeSpecifier: Sized + Clone + 'static {
+pub trait RuntimeSpecifier: Sized + 'static {
     const VALUES: &'static [Self];
-    // TODO: This should just be a stopgap until `const fn`s are more fleshed-out - at the
-    //       moment it's not possible to define this as `VALUES.map(Self::typeof)`.
     const TYPES: &'static [ValueType];
+
+    fn id(&self) -> SpecId;
+    fn from_id(id: SpecId) -> Self;
 
     fn value_type(&self) -> ValueType {
         Self::TYPES[self.id()]
-    }
-
-    fn id(&self) -> SpecId;
-    fn from_id(id: SpecId) -> Self {
-        Self::VALUES[id].clone()
     }
 }
 
@@ -30,6 +26,10 @@ impl RuntimeSpecifier for ! {
     const TYPES: &'static [ValueType] = &[];
 
     fn id(&self) -> SpecId {
+        unreachable!()
+    }
+
+    fn from_id(id: SpecId) -> Self {
         unreachable!()
     }
 }
@@ -101,10 +101,12 @@ pub struct NoIter<T> {
 
 impl<T> Iterator for NoIter<T> {
     type Item = T;
+
     fn next(&mut self) -> Option<Self::Item> {
         unreachable!()
     }
 }
+
 impl<T> ExactSizeIterator for NoIter<T> {
     fn len(&self) -> usize {
         unreachable!()
@@ -189,4 +191,18 @@ where
             this @ AnyIterInner::Midi(_) => Err(AnyIter(this)),
         }
     }
+}
+
+#[cfg(test)]
+mod test {
+    // Statically assert that an enum with `NoIter` as one variant has no tag,
+    // which makes `AnyIter` zero-cost.
+    const _: () = {
+        enum Foo {
+            A,
+            B(super::NoIter<()>),
+        }
+
+        [(); 0 - std::mem::size_of::<Foo>()];
+    };
 }

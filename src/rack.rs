@@ -258,6 +258,12 @@ where
         new_id
     }
 
+    fn clear(&mut self) {
+        self.storage.clear();
+        self.indices.clear();
+        self.ids = Default::default();
+    }
+
     fn ids(&self) -> &[ComponentId] {
         &self.indices
     }

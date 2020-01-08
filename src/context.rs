@@ -5,18 +5,34 @@ use crate::{
     Component, Value,
 };
 use nom_midi::MidiEventType;
-use std::{convert::TryInto, marker::PhantomData};
+use std::{convert::TryInto, marker::PhantomData, time::Duration};
 
 pub struct FileId<Kind> {
     index: usize,
     _marker: PhantomData<Kind>,
 }
 
+impl<Kind> Clone for FileId<Kind> {
+    fn clone(&self) -> Self {
+        FileId {
+            index: self.index,
+            _marker: PhantomData,
+        }
+    }
+}
+
+pub trait File<Kind> {
+    type Samples: Iterator<Item = Kind>;
+
+    fn at(&self, dur: Duration) -> Self::Samples;
+    fn between(&self, last: Duration, dur: Duration) -> Self::Samples;
+}
+
 pub trait FileAccess<Kind> {
-    type ReadFile;
+    type ReadFile: File<Kind>;
 
     // Will always read the file from the start
-    fn read(&self, id: FileId<Kind>) -> Option<Self::ReadFile>;
+    fn read(&self, id: FileId<Kind>) -> Self::ReadFile;
 }
 
 pub trait GetGlobalInput<Spec> {
@@ -95,7 +111,6 @@ where
 {
     type Iter = Ctx::Iter;
 
-    // `None` means that this input is not wired
     fn input<T: Key>(&self) -> Option<<Self::Iter as PossiblyIter<T::Value>>::Iter>
     where
         C::InputSpecifier: HasStorage<InternalWire>,

@@ -1,6 +1,7 @@
 use crate::Value;
 
 pub mod amplifier;
+pub mod midi_expander;
 pub mod synth;
 
 use amplifier::Amplifier;
@@ -24,7 +25,7 @@ mod test {
 
     crate::specs! {
         mod any {
-            OneChannel: Value
+            OneChannel: crate::Value
         }
     }
 
@@ -43,36 +44,6 @@ mod test {
             super::OctahackComponent::MAX_OUTPUT_COUNT
         );
     }
-
-    /*
-    #[test]
-    fn get_rack_output() {
-        let mut rack = Rack::<super::OctahackComponent, Specifier, Specifier>::new();
-
-        let amp = rack.new_component(super::Amplifier);
-        rack.wire(
-            WireSrc::rack_input(Specifier::OneChannel),
-            WireDst::component_input(amp, super::amplifier::Specifier::Only),
-        );
-        rack.wire(
-            WireSrc::component_output(amp, super::amplifier::Specifier::Only),
-            WireDst::rack_output(Specifier::OneChannel),
-        );
-
-        let context = QuickContext::input(|_: &(), i| {
-            Some(match i {
-                Specifier::OneChannel => AnyIter::from(std::iter::once(Value::max_value())),
-            })
-        });
-
-        rack.update(&context);
-        assert_eq!(
-            rack.output(Specifier::OneChannel, context)
-                .map(|i| i.analog().unwrap().collect::<Vec<_>>()),
-            Some(vec![Value::max_value()])
-        );
-    }
-    */
 
     #[test]
     fn circular_wiring() {

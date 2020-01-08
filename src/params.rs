@@ -105,7 +105,7 @@ pub trait Key {
 
 #[macro_export]
 macro_rules! specs {
-    ($( $v:vis mod $modname:ident { $($key:ident : $value:ident),* } )*) => {
+    ($( $v:vis mod $modname:ident { $($key:ident : $value:ty),* } )*) => {
         $(
             $v mod $modname {
                 use $crate::derive_more::TryInto;
@@ -171,10 +171,18 @@ macro_rules! specs {
                     C: $crate::Component,
                     $(
                         C: $crate::GetOutput<$key>,
+                        $value: $crate::components::ValueIterImplHelper<<C as $crate::GetOutput<$key>>::Iter>,
+                        <C as $crate::GetOutput<$key>>::Iter: Into<
+                            <$value as
+                                $crate::components::ValueIterImplHelper<
+                                    <C as $crate::GetOutput<$key>>::Iter
+                                >
+                            >::AnyIter
+                        >,
                     )*
                 {
                     type Iter = ValueIter<$(
-                        <super::$value as
+                        <$value as
                             $crate::components::ValueIterImplHelper<<C as $crate::GetOutput<$key>>::Iter>>::AnyIter,
                     )*>;
 
@@ -218,12 +226,23 @@ macro_rules! specs {
 
                         unreachable!()
                     }
+
+                    #[allow(irrefutable_let_patterns, unused_assignments)]
+                    fn from_id(id: $crate::SpecId) -> Self {
+                        let mut i = 0;
+                        $(
+                            if i == id { return Specifier::$key; }
+                            i += 1;
+                        )*
+
+                        unreachable!()
+                    }
                 }
 
                 $(
                     pub enum $key {}
                     impl $crate::params::Key for $key {
-                        type Value = super::$value;
+                        type Value = $value;
                     }
                 )*
 
@@ -282,17 +301,13 @@ macro_rules! specs {
                 #[allow(non_snake_case)]
                 pub struct Params {
                     $(
-                        pub $key : super::$value,
+                        pub $key : $value,
                     )*
                 }
 
-                const _: () = {
-                    fn assert_params_implements_default() where Params: Default {}
-                };
-
                 $(
                     impl<T> $crate::params::ParamStorageGet<$key> for ParamsWithExtra<T> {
-                        type Output = super::$value;
+                        type Output = $value;
                         type Extra = T;
 
                         fn get(&self) -> (&Self::Output, &Self::Extra) {
@@ -318,14 +333,14 @@ macro_rules! specs {
                 #[derive(TryInto)]
                 pub enum Ref<'a> {
                     $(
-                        $key(&'a super::$value)
+                        $key(&'a $value)
                     ),*
                 }
 
                 #[derive(TryInto)]
                 pub enum RefMut<'a> {
                     $(
-                        $key(&'a mut super::$value)
+                        $key(&'a mut $value)
                     ),*
                 }
 
@@ -367,8 +382,8 @@ mod tests {
 
     specs! {
         mod foo {
-            A: Value,
-            B: MidiValue
+            A: crate::Value,
+            B: crate::MidiValue
         }
     }
 

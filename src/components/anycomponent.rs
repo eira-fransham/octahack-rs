@@ -34,7 +34,6 @@ macro_rules! component_set {
                 type Inner = $crate::rack::InternalWire;
                 type Specifier = $crate::AnyInputSpec;
 
-
                 fn get(&self, spec: Self::Specifier) -> &Self::Inner{
                     match self {
                         $(

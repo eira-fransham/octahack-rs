@@ -3,7 +3,7 @@ use az::Az;
 
 crate::specs! {
     mod amplifier {
-        Only: Value
+        Only: crate::Value
     }
 }
 

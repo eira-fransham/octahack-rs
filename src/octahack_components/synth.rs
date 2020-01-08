@@ -3,13 +3,13 @@ use fast_floats::FF64;
 
 crate::specs! {
     pub mod params {
-        Freq: Value
+        Freq: crate::Value
     }
 
     pub mod output {
-        Sine: Value,
-        Saw: Value,
-        Square: Value
+        Sine: crate::Value,
+        Saw: crate::Value,
+        Square: crate::Value
     }
 }
 
@@ -21,7 +21,7 @@ impl Default for params::Params {
 
 #[derive(Default)]
 pub struct Synth {
-    tick: FF64,
+    tick: f64,
 }
 
 impl Synth {
@@ -41,6 +41,7 @@ fn volt_to_octave(volts: Value) -> f64 {
 // 440 * (2 ^ 10x) = freq
 // log2(freq / 440) / 10. = x
 
+// This converts a frequency in Hz to a number of virtual "volts"
 pub fn freq(freq: impl Into<f64>) -> Value {
     let freq = freq.into();
     Value::saturating_from_num((f((f(freq) / f(440.)).0.log2()) * f(f64::from(super::VOLT))).0)
@@ -58,7 +59,7 @@ impl Component for Synth {
         let freq = volt_to_octave(ctx.param::<params::Freq>());
 
         Synth {
-            tick: (self.tick + f(freq) / f(ctx.sample_rate() as f64)) % f(1.),
+            tick: ((f(self.tick) + f(freq) / f(ctx.sample_rate() as f64)) % f(1.)).0,
         }
     }
 }
@@ -87,7 +88,7 @@ impl GetOutput<output::Saw> for Synth {
     {
         use std::iter;
 
-        iter::once(Value::saturating_from_num(((f(2.) * self.tick) - f(1.)).0))
+        iter::once(Value::saturating_from_num((f(1.) - f(2.) * self.tick).0))
     }
 }
 
@@ -100,7 +101,7 @@ impl GetOutput<output::Square> for Synth {
     {
         use std::iter;
 
-        iter::once(Value::saturating_from_num(if self.tick.0 < 0.5 {
+        iter::once(Value::saturating_from_num(if self.tick < 0.5 {
             1.
         } else {
             -1.

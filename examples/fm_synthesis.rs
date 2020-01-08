@@ -8,7 +8,7 @@ use octahack::{
 
 octahack::specs! {
     mod any {
-        OneChannel: Value
+        OneChannel: octahack::Value
     }
 }
 
