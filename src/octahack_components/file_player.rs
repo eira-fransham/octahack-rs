@@ -52,9 +52,10 @@ impl GetOutput<output::Output> for FilePlayer {
         use crate::context::File;
 
         if let Some(file) = ctx.param::<params::File>() {
-            itertools::Either::Left(ctx.read(file).at(self.seek_pos))
+            ctx.read(file).at(self.seek_pos).collect::<Vec<_>>()
         } else {
-            itertools::Either::Right(std::iter::empty())
+            std::iter::empty().collect::<Vec<_>>()
         }
+        .into_iter()
     }
 }

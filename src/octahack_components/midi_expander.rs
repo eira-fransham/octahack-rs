@@ -1,5 +1,5 @@
 use crate::{Component, Context, MidiValue};
-use arrayvec::ArrayVec;
+use staticvec::StaticVec;
 
 crate::specs! {
     pub mod input {
@@ -31,7 +31,7 @@ struct Note {
 
 #[derive(Clone, Default)]
 pub struct MidiExpander {
-    notes: ArrayVec<[f64; VOICES]>,
+    notes: StaticVec<f64, VOICES>,
 }
 
 impl MidiExpander {

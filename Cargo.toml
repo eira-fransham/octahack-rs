@@ -7,7 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-arrayvec = "0.5"
+staticvec = "0.7"
 az = "0.3"
 cpal = "0.8"
 crossbeam-channel = "0.3"

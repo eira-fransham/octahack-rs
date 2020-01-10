@@ -56,6 +56,18 @@ impl Param for crate::MidiValue {
     }
 }
 
+// TODO: Can you wire this? How would that work?
+impl<Kind> Param for Option<crate::context::FileId<Kind>> {
+    type Extra = ();
+
+    fn access<Ctx>(&self, _: &(), _: &Ctx) -> Self
+    where
+        Ctx: crate::components::anycomponent::AnyContext,
+    {
+        *self
+    }
+}
+
 impl Param for crate::Value {
     type Extra = crate::rack::InternalParamWire;
 
@@ -64,8 +76,8 @@ impl Param for crate::Value {
         Ctx: crate::components::anycomponent::AnyContext,
     {
         use crate::{rack::ParamWire, ValueExt};
-        use arrayvec::ArrayVec;
         use fixed::types::{U0F32, U1F31};
+        use staticvec::StaticVec;
 
         /// Improves precision (and possibly performance, too) by waiting as long as possible to do division.
         /// If we overflow 36 (I believe?) bits total then it crashes, but I believe that it's OK to assume
@@ -76,7 +88,7 @@ impl Param for crate::Value {
         {
             let len = iter.len() as u32;
 
-            let mut cur = ArrayVec::<[U0F32; 4]>::new();
+            let mut cur = StaticVec::<U0F32, 4>::new();
             let mut acc = U0F32::default();
 
             for i in iter {

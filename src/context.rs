@@ -21,11 +21,27 @@ impl<Kind> Clone for FileId<Kind> {
     }
 }
 
-pub trait File<Kind> {
-    type Samples: Iterator<Item = Kind>;
+impl<Kind> Copy for FileId<Kind> {}
 
-    fn at(&self, dur: Duration) -> Self::Samples;
-    fn between(&self, last: Duration, dur: Duration) -> Self::Samples;
+pub trait File<Kind> {
+    type SamplesAt: ExactSizeIterator<Item = Kind>;
+    type SamplesBetween: ExactSizeIterator<Item = Self::SamplesAt>;
+
+    fn at(&self, dur: Duration) -> Self::SamplesAt;
+    fn between(&self, last: Duration, dur: Duration) -> Self::SamplesBetween;
+}
+
+impl<Kind> File<Kind> for ! {
+    type SamplesAt = std::iter::Empty<Kind>;
+    type SamplesBetween = std::iter::Empty<Self::SamplesAt>;
+
+    fn at(&self, dur: Duration) -> Self::SamplesAt {
+        todo!()
+    }
+
+    fn between(&self, last: Duration, dur: Duration) -> Self::SamplesBetween {
+        todo!()
+    }
 }
 
 pub trait FileAccess<Kind> {
@@ -33,6 +49,15 @@ pub trait FileAccess<Kind> {
 
     // Will always read the file from the start
     fn read(&self, id: FileId<Kind>) -> Self::ReadFile;
+}
+
+impl<T, Kind> FileAccess<Kind> for T {
+    type ReadFile = !;
+
+    // Will always read the file from the start
+    fn read(&self, id: FileId<Kind>) -> Self::ReadFile {
+        todo!()
+    }
 }
 
 pub trait GetGlobalInput<Spec> {
@@ -79,14 +104,16 @@ where
 }
 
 pub trait Context<C: Component>:
-    GetInput<C::InputSpecifier> + GetParam<C::ParamSpecifier> + ContextMeta
+    // TODO: Can we bound in such a way that will be `FileAccess` for any `T` for which we have a `FileId<T>`
+    //       parameter?
+    GetInput<C::InputSpecifier> + GetParam<C::ParamSpecifier> + ContextMeta + FileAccess<Value>
 {
 }
 
 impl<T, C> Context<C> for T
 where
     C: Component,
-    T: GetInput<C::InputSpecifier> + GetParam<C::ParamSpecifier> + ContextMeta,
+    T: GetInput<C::InputSpecifier> + GetParam<C::ParamSpecifier> + ContextMeta + FileAccess<Value>,
 {
 }
 
