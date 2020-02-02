@@ -1,6 +1,13 @@
-#![feature(trivial_bounds, type_alias_impl_trait, specialization, never_type)]
+#![feature(
+    trivial_bounds,
+    type_alias_impl_trait,
+    specialization,
+    never_type,
+    exact_size_is_empty
+)]
 // TODO: This warning is buggy when used with `feature(trivial_bounds)`
 #![allow(trivial_bounds)]
+#![deny(unsafe_code)]
 
 // TODO: Remove all uses of `Vec`
 
@@ -36,6 +43,10 @@ fn s_to_u(signed: I1F31) -> U1F31 {
     U1F31::from_bits(
         (signed.to_bits() as u32).wrapping_add(I1F31::max_value().to_bits() as u32) as _,
     )
+}
+
+pub trait UiElement {
+    const NAME: &'static str;
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

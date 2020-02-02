@@ -42,6 +42,8 @@ fn main() {
     rack.set_param::<_, Value>(modulator, Params::Freq, freq(220));
     rack.set_param::<_, Value>(carrier, Params::Freq, freq(440));
 
+    println!("{}", rack);
+
     let streamer =
         octahack::output::AudioStreamer::new_convert(None, rack, rodio::source::SineWave::new(440))
             .convert_samples::<f32>();

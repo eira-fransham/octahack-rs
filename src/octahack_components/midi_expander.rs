@@ -1,4 +1,4 @@
-use crate::{Component, Context, MidiValue};
+use crate::{params::Key, Component, Context, GetOutput, MidiValue, Value};
 use staticvec::StaticVec;
 
 crate::specs! {

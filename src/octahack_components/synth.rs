@@ -1,4 +1,4 @@
-use crate::{Component, Context, GetOutput, Value};
+use crate::{Component, Context, GetOutput, Value, UiElement};
 use fast_floats::FF64;
 
 crate::specs! {
@@ -22,6 +22,10 @@ impl Default for params::Params {
 #[derive(Default)]
 pub struct Synth {
     tick: f64,
+}
+
+impl UiElement for Synth {
+    const NAME: &'static str = "Synth";
 }
 
 impl Synth {

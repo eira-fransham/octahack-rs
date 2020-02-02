@@ -143,6 +143,49 @@ macro_rules! component_set {
                 }
             )*
 
+            impl<'a> $crate::components::anycomponent::AnyUiElement<'a> for &'a Component
+            where $( super::$t: $crate::UiElement),*
+            {
+                type InputNames = impl std::iter::ExactSizeIterator<Item = &'a dyn std::fmt::Display> + 'a;
+                type OutputNames = impl std::iter::ExactSizeIterator<Item = &'a dyn std::fmt::Display> + 'a;
+                type ParamNames = impl std::iter::ExactSizeIterator<Item = &'a dyn std::fmt::Display> + 'a;
+
+                fn name(self) -> &'static str {
+                    match self {
+                        $(
+                            Component::$t(_) => <super::$t as $crate::UiElement>::NAME,
+                        )*
+                    }
+                }
+                fn input_names(self) -> Self::InputNames {
+                    match self {
+                        $(
+                            Component::$t(_) => {
+                                <<super::$t as $crate::Component>::InputSpecifier as $crate::RuntimeSpecifier>::VALUES.iter().map(|v| v as &dyn std::fmt::Display).collect::<Vec<_>>().into_iter()
+                            },
+                        )*
+                    }
+                }
+                fn output_names(self) -> Self::OutputNames {
+                    match self {
+                        $(
+                            Component::$t(_) => {
+                                <<super::$t as $crate::Component>::OutputSpecifier as $crate::RuntimeSpecifier>::VALUES.iter().map(|v| v as &dyn std::fmt::Display).collect::<Vec<_>>().into_iter()
+                            },
+                        )*
+                    }
+                }
+                fn param_names(self) -> Self::ParamNames {
+                    match self {
+                        $(
+                            Component::$t(_) => {
+                                <<super::$t as $crate::Component>::ParamSpecifier as $crate::RuntimeSpecifier>::VALUES.iter().map(|v| v as &dyn std::fmt::Display).collect::<Vec<_>>().into_iter()
+                            },
+                        )*
+                    }
+                }
+            }
+
             impl $crate::AnyComponent for Component
             where $( super::$t: $crate::Component ),*
             {
@@ -250,6 +293,23 @@ pub struct Types {
     pub input: &'static [ValueType],
     pub output: &'static [ValueType],
     pub parameters: &'static [ValueType],
+}
+
+pub struct Names {
+    pub input: &'static [ValueType],
+    pub output: &'static [ValueType],
+    pub parameters: &'static [ValueType],
+}
+
+pub trait AnyUiElement<'a> {
+    type InputNames: ExactSizeIterator<Item = &'a dyn std::fmt::Display>;
+    type OutputNames: ExactSizeIterator<Item = &'a dyn std::fmt::Display>;
+    type ParamNames: ExactSizeIterator<Item = &'a dyn std::fmt::Display>;
+
+    fn name(self) -> &'static str;
+    fn input_names(self) -> Self::InputNames;
+    fn output_names(self) -> Self::OutputNames;
+    fn param_names(self) -> Self::ParamNames;
 }
 
 pub trait AnyContext {

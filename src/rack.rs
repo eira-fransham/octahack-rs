@@ -1,11 +1,16 @@
 use crate::{
-    components::{anycomponent::AnyContext, PossiblyEither},
+    components::{
+        anycomponent::{AnyContext, AnyUiElement},
+        PossiblyEither,
+    },
     context::{ContextMeta, GetGlobalInput},
     params::{HasStorage, ParamStorage, Storage},
     AnyComponent, AnyInputSpec, AnyOutputSpec, AnyParamSpec, RuntimeSpecifier, SpecId, Value,
 };
 use fxhash::FxHashMap;
 use std::{
+    any::Any,
+    fmt,
     marker::PhantomData,
     ops::{Index, IndexMut},
 };
@@ -155,6 +160,12 @@ impl<Id> GenericWire<marker::Output, Id> {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ComponentId(usize);
 
+impl fmt::Display for ComponentId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "%{}", self.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamWire {
     pub src: Wire<marker::Output>,
@@ -212,6 +223,18 @@ where
     ids: ComponentIdGen,
     storage: FxHashMap<ComponentId, TaggedComponent<C>>,
     indices: Vec<ComponentId>,
+}
+
+impl<'a, C> IntoIterator for &'a ComponentVec<C>
+where
+    C: AnyComponent + 'a,
+{
+    type Item = (ComponentId, &'a TaggedComponent<C>);
+    type IntoIter = impl ExactSizeIterator<Item = Self::Item> + 'a;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.indices.iter().map(move |i| (*i, &self.storage[i]))
+    }
 }
 
 impl<C> std::fmt::Debug for ComponentVec<C>
@@ -341,6 +364,132 @@ where
             out_wires: Default::default(),
             _marker: PhantomData,
         }
+    }
+}
+
+impl<C, InputSpec, OutputSpec> fmt::Display for Rack<C, InputSpec, OutputSpec>
+where
+    InputSpec: RuntimeSpecifier + fmt::Display,
+    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire> + fmt::Display + Clone,
+    C: AnyComponent,
+    for<'any> &'any C: AnyUiElement<'any>,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn printvalue(val: &dyn Any, f: &mut fmt::Formatter) -> fmt::Result {
+            if let Some(value) = val.downcast_ref::<Value>() {
+                write!(f, "{}", value)
+            } else {
+                Err(fmt::Error)
+            }
+        }
+
+        write!(f, "def main(")?;
+        let mut ispeciter = InputSpec::VALUES.iter();
+
+        if let Some(i) = ispeciter.next() {
+            write!(f, "{}", i)?;
+        }
+
+        for i in ispeciter {
+            write!(f, ", {}", i)?;
+        }
+
+        writeln!(f, "):")?;
+
+        for (i, component) in &self.components {
+            write!(f, "    {}: {{", i)?;
+            let mut onameiter = component.inner.output_names();
+
+            if let Some(o) = onameiter.next() {
+                write!(f, " {}", o)?;
+            }
+
+            for o in onameiter {
+                write!(f, ", {}", o)?;
+            }
+
+            writeln!(f, " }} = {} {{", component.inner.name())?;
+
+            for (_i, p) in component.inner.param_names().enumerate() {
+                writeln!(f, "        {} = {{TODO}},", p)?;
+            }
+
+            let inameiter = component.inner.input_names().enumerate();
+
+            if !inameiter.is_empty() {
+                writeln!(f)?;
+            }
+
+            for (i, input) in inameiter {
+                let wire = component.inputs.get(AnyInputSpec(i));
+
+                write!(f, "        {} = ", input)?;
+                match wire {
+                    None => write!(f, "NONE")?,
+                    Some(Wire(GenericWire {
+                        io_index,
+                        element: ElementSpecifier::Rack,
+                        ..
+                    })) => write!(f, "{}", InputSpec::VALUES[*io_index])?,
+                    Some(Wire(GenericWire {
+                        io_index,
+                        element: ElementSpecifier::Component { id },
+                        ..
+                    })) => write!(
+                        f,
+                        "{}->{}",
+                        id,
+                        self.components[*id]
+                            .inner
+                            .input_names()
+                            .nth(*io_index)
+                            .unwrap()
+                    )?,
+                }
+
+                writeln!(f, ",")?;
+            }
+
+            writeln!(f, "    }}")?;
+        }
+
+        writeln!(f)?;
+
+        writeln!(f, "    return {{")?;
+
+        for o in OutputSpec::VALUES {
+            let wire = self.out_wires.get(o.clone());
+
+            write!(f, "        {} = ", o)?;
+            match wire {
+                None => write!(f, "NONE")?,
+                Some(Wire(GenericWire {
+                    io_index,
+                    element: ElementSpecifier::Rack,
+                    ..
+                })) => write!(f, "{}", InputSpec::VALUES[*io_index])?,
+                Some(Wire(GenericWire {
+                    io_index,
+                    element: ElementSpecifier::Component { id },
+                    ..
+                })) => write!(
+                    f,
+                    "{}->{}",
+                    id,
+                    self.components[*id]
+                        .inner
+                        .output_names()
+                        .nth(*io_index)
+                        .unwrap()
+                )?,
+            }
+
+            writeln!(f, ",")?;
+        }
+
+        writeln!(f, "    }}")?;
+
+        Ok(())
     }
 }
 

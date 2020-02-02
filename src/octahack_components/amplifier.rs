@@ -1,4 +1,4 @@
-use crate::{Component, Context, GetOutput, Value, ValueExt};
+use crate::{Component, Context, GetOutput, UiElement, Value, ValueExt};
 use az::Az;
 
 crate::specs! {
@@ -20,6 +20,10 @@ impl Default for amplifier::Params {
 
 #[derive(Copy, Clone)]
 pub struct Amplifier;
+
+impl UiElement for Amplifier {
+    const NAME: &'static str = "Amplifier";
+}
 
 impl Component for Amplifier {
     type InputSpecifier = Specifier;

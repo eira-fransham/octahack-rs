@@ -215,6 +215,7 @@ macro_rules! specs {
                     $( $key, )*
                 }
 
+                #[derive(Clone)]
                 pub enum ValueIter<$($key,)*> {
                     $(
                         $key($key),
@@ -308,10 +309,18 @@ macro_rules! specs {
                     type Storage = Storage<T>;
                 }
 
+                impl std::fmt::Display for Specifier {
+                    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        match self {
+                            $(
+                                Specifier::$key => write!(f, stringify!($key)),
+                            )*
+                        }
+                    }
+                }
+
                 impl $crate::RuntimeSpecifier for Specifier {
                     const VALUES: &'static [Self] = &[ $( Specifier::$key ),* ];
-                    // TODO: This should just be a stopgap until `const fn`s are more fleshed-out - at the
-                    //       moment it's not possible to define this as `VALUES.map(Self::typeof)`.
                     const TYPES: &'static [$crate::ValueType] = &[
                         $( (stringify!($key), $crate::ValueType::mono()).1 ),*
                     ];
