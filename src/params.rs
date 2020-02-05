@@ -50,7 +50,7 @@ where
 }
 
 pub trait StorageMut: Storage {
-    fn get_mut(&mut self, spec: &Self::Specifier) -> &mut Self::Inner;
+    fn set(&mut self, spec: &Self::Specifier, val: Self::Inner);
 }
 
 impl<T> StorageMut for T
@@ -58,8 +58,8 @@ where
     T: DerefMut,
     T::Target: StorageMut,
 {
-    fn get_mut(&mut self, spec: &Self::Specifier) -> &mut Self::Inner {
-        <T::Target as StorageMut>::get_mut(&mut **self, spec)
+    fn set(&mut self, spec: &Self::Specifier, val: Self::Inner) {
+        <T::Target as StorageMut>::set(&mut **self, spec, val)
     }
 }
 
@@ -111,10 +111,10 @@ where
     A: StorageMut,
     B: StorageMut<Specifier = A::Specifier, Inner = A::Inner>,
 {
-    fn get_mut(&mut self, spec: &Self::Specifier) -> &mut Self::Inner {
+    fn set(&mut self, spec: &Self::Specifier, val: Self::Inner) {
         match self {
-            Self::Left(val) => val.get_mut(spec),
-            Self::Right(val) => val.get_mut(spec),
+            Self::Left(inner) => inner.set(spec, val),
+            Self::Right(inner) => inner.set(spec, val),
         }
     }
 }
@@ -136,21 +136,21 @@ pub trait HasStorage<T>: Sized {
     type Storage: StorageMut<Specifier = Self, Inner = T>;
 }
 
-pub struct AnyStorage<S, T> {
+pub struct AnyOptStorage<S, T> {
     inner: Vec<Option<T>>,
     _marker: PhantomData<S>,
 }
 
-impl<S, T> Default for AnyStorage<S, T> {
+impl<S, T> Default for AnyOptStorage<S, T> {
     fn default() -> Self {
-        AnyStorage {
+        AnyOptStorage {
             inner: vec![],
             _marker: PhantomData,
         }
     }
 }
 
-impl<'a, S: 'a, T: 'a> IntoIterator for &'a AnyStorage<S, T>
+impl<'a, S: 'a, T: 'a> IntoIterator for &'a AnyOptStorage<S, T>
 where
     S: RuntimeSpecifier,
 {
@@ -166,7 +166,7 @@ where
     }
 }
 
-impl<S, T> Storage for AnyStorage<S, T>
+impl<S, T> Storage for AnyOptStorage<S, T>
 where
     S: RefRuntimeSpecifier,
 {
@@ -178,27 +178,27 @@ where
     }
 }
 
-impl<S, T> StorageMut for AnyStorage<S, T>
+impl<S, T> StorageMut for AnyOptStorage<S, T>
 where
     S: RefRuntimeSpecifier,
 {
-    fn get_mut(&mut self, spec: &Self::Specifier) -> &mut Self::Inner {
+    fn set(&mut self, spec: &Self::Specifier, val: Self::Inner) {
         let diff = (1 + spec.id()).saturating_sub(self.inner.len());
 
         if diff > 0 {
             self.inner.extend(iter::repeat_with(|| None).take(diff));
         }
 
-        &mut self.inner[spec.id()]
+        self.inner[spec.id()] = val;
     }
 }
 
-impl HasStorage<InternalWire> for AnyOutputSpec {
-    type Storage = AnyStorage<Self, Wire<marker::Output>>;
+impl<T> HasStorage<Option<T>> for AnyOutputSpec {
+    type Storage = AnyOptStorage<Self, T>;
 }
 
-impl HasStorage<InternalWire> for AnyInputSpec {
-    type Storage = AnyStorage<Self, Wire<marker::Output>>;
+impl<T> HasStorage<Option<T>> for AnyInputSpec {
+    type Storage = AnyOptStorage<Self, T>;
 }
 
 pub trait HasParamStorage: Sized {
@@ -356,7 +356,7 @@ impl<V> Storage for EmptyStorage<V> {
 }
 
 impl<V> StorageMut for EmptyStorage<V> {
-    fn get_mut(&mut self, _: &Self::Specifier) -> &mut Self::Inner {
+    fn set(&mut self, _: &Self::Specifier, val: Self::Inner) {
         unreachable!()
     }
 }
@@ -621,10 +621,10 @@ macro_rules! specs {
                 }
 
                 impl<V> $crate::params::StorageMut for Storage<V> {
-                    fn get_mut(&mut self, spec: &Self::Specifier) -> &mut Self::Inner {
+                    fn set(&mut self, spec: &Self::Specifier, val: Self::Inner) {
                         match spec {
                             $(
-                                Specifier::$key => &mut self.$key,
+                                Specifier::$key => self.$key = val,
                             )*
                         }
                     }

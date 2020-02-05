@@ -379,13 +379,13 @@ pub struct ComponentId(pub(crate) Uid);
 
 impl fmt::Display for ComponentId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "%{}", (self.0))
+        write!(f, "%{}", self.0)
     }
 }
 
 impl fmt::Display for FuncId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Func-{}", (self.0))
+        write!(f, "fn::{}", self.0)
     }
 }
 
@@ -528,6 +528,8 @@ where
     main: FuncDef<InputSpec, OutputSpec>,
     pub(crate) funcs: Funcs,
     pub(crate) meta_storage: UidMap<Meta<C>>,
+    // TODO: Maybe only initialise storage when we actually use it, although this would need some
+    //       way of specifying components without creating them.
     pub(crate) state_storage: UidMap<C>,
 }
 
@@ -838,10 +840,7 @@ where
                             // We need to use `dyn` here because otherwise this type is infinitely recursive
                             // (Funnily, Rust doesn't notice this, it just hangs at the very last stage of
                             // compilation)
-                            inner: self as &dyn FuncContext<
-                                MainCtx = Self::MainCtx,
-                                Component = Self::Component,
-                            >,
+                            inner: self,
                             path: id,
                         }
                         .read_wire(
@@ -912,21 +911,35 @@ where
         >,
     > {
         match wire.element() {
-            ElementSpecifier::Component { id } => {
-                let cur_meta = self.meta()[&id.0].component().unwrap();
-                let comp = &self.state()[&id.0];
+            ElementSpecifier::Component { id } => match &self.meta()[&id.0] {
+                Meta::Component(cur_meta) => {
+                    let comp = &self.state()[&id.0];
 
-                let out = comp.output(
-                    AnyOutputSpec(wire.output_id().0),
-                    &SingleComponentCtx {
-                        ctx: &*self,
-                        functions,
-                        cur_meta,
-                    },
-                );
-
-                Some(PossiblyEither::Left(out))
-            }
+                    Some(PossiblyEither::Left(comp.output(
+                        AnyOutputSpec(wire.output_id().0),
+                        &SingleComponentCtx {
+                            ctx: &*self,
+                            functions,
+                            cur_meta,
+                        },
+                    )))
+                }
+                Meta::Function { func_id, .. } => RecurseContext {
+                    inner: self as &dyn FuncContext<
+                        MainCtx = Self::MainCtx,
+                        Component = Self::Component,
+                    >,
+                    path: id,
+                }
+                .read_wire(
+                    functions,
+                    functions[func_id.0]
+                        .out_wires
+                        .get(&wire.output_id())
+                        .as_ref()?
+                        .clone(),
+                ),
+            },
             ElementSpecifier::FuncInputs => match &self.inner.meta()[self.path.0] {
                 Meta::Function { inputs, .. } => {
                     match inputs.get(&AnyInputSpec(wire.output_id().0)) {
@@ -987,16 +1000,14 @@ where
         match dst.0 {
             WireDstInner::Input(dst) => match dst.element() {
                 ElementSpecifier::Component { id } => {
-                    *self.meta_storage[&id.0]
+                    self.meta_storage[&id.0]
                         .inputs_mut()
-                        .get_mut(&dst.input_id()) = Some(src);
+                        .set(&dst.input_id(), Some(src));
                 }
-                ElementSpecifier::FuncInputs => {
-                    *self
-                        .def_mut()
-                        .out_wires
-                        .get_mut(&OutputSpec::from_id(dst.input_id().0)) = Some(src)
-                }
+                ElementSpecifier::FuncInputs => self
+                    .def_mut()
+                    .out_wires
+                    .set(&OutputSpec::from_id(dst.input_id().0), Some(src)),
             },
             WireDstInner::Param(val, dst) => match dst.element() {
                 ElementSpecifier::Component { id } => {

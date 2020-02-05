@@ -146,57 +146,83 @@ where
                         write!(f, ", {}", print_spec(o))?;
                     }
 
-                    writeln!(f, " }} = {} {{", component.name())?;
+                    write!(f, " }} = {} {{", component.name())?;
 
-                    for (i, p) in component.param_names().enumerate() {
-                        write!(f, "        ${} = ", p)?;
+                    let (params, inputs) = (
+                        component.param_names().enumerate(),
+                        component.input_names().enumerate(),
+                    );
 
-                        let (value, param_wire) = meta.params.get(&AnyParamSpec(i));
+                    if params.len() + inputs.len() == 0 {
+                        writeln!(f, " }}")?;
+                    } else {
+                        for (i, p) in params {
+                            writeln!(f)?;
+                            write!(f, "        ${} = ", p)?;
 
-                        match param_wire.downcast_ref::<InternalParamWire>().unwrap() {
-                            Some(wire) => {
-                                write!(
-                                    f,
-                                    "lerp({}, {}..{})",
-                                    print_wire(&wire.src),
-                                    component.display_param_value(AnyParamSpec(i), value),
-                                    component.display_param_value(AnyParamSpec(i), &wire.value),
-                                )?;
+                            let (value, param_wire) = meta.params.get(&AnyParamSpec(i));
+
+                            match param_wire.downcast_ref::<InternalParamWire>().unwrap() {
+                                Some(wire) => {
+                                    write!(
+                                        f,
+                                        "lerp({}, {}..{})",
+                                        print_wire(&wire.src),
+                                        component.display_param_value(AnyParamSpec(i), value),
+                                        component.display_param_value(AnyParamSpec(i), &wire.value),
+                                    )?;
+                                }
+                                None => {
+                                    write!(
+                                        f,
+                                        "{}",
+                                        component.display_param_value(AnyParamSpec(i), value)
+                                    )?;
+                                }
                             }
-                            None => {
-                                write!(
-                                    f,
-                                    "{}",
-                                    component.display_param_value(AnyParamSpec(i), value)
-                                )?;
-                            }
+
+                            write!(f, ",")?;
                         }
 
-                        writeln!(f, ",")?;
-                    }
-
-                    let inameiter = component.input_names().enumerate();
-
-                    if !inameiter.is_empty() {
                         writeln!(f)?;
+                        if inputs.len() > 0 {
+                            writeln!(f)?;
+                        }
+
+                        for (i, input) in inputs {
+                            let wire = meta.inputs.get(&AnyInputSpec(i));
+
+                            writeln!(f, "        {} = {},", input, print_opt_wire(wire))?;
+                        }
+
+                        writeln!(f, "    }}")?;
                     }
-
-                    for (i, input) in inameiter {
-                        let wire = meta.inputs.get(&AnyInputSpec(i));
-
-                        writeln!(f, "        {} = {},", input, print_opt_wire(wire))?;
-                    }
-
-                    writeln!(f, "    }}")?;
                 }
                 Meta::Function { func_id, inputs } => {
-                    writeln!(f, "    {} = {} {{ ", i, func_id)?;
+                    write!(f, "    {}: {{ ", i)?;
+
+                    let mut iter = (&self.func.defs_and_func.get(*func_id).out_wires).into_iter();
+                    if let Some((o, _)) = iter.next() {
+                        write!(f, "{}", print_spec(&o))?;
+                    }
+                    for (o, _) in iter {
+                        write!(f, ", {}", print_spec(&o))?;
+                    }
+                    write!(f, " }} = {} {{", func_id)?;
+
+                    let mut any = false;
 
                     for (name, wire) in inputs {
-                        writeln!(f, "        {} = {}", name, print_opt_wire(wire))?;
+                        writeln!(f)?;
+                        write!(f, "        {} = {}", name, print_opt_wire(wire))?;
+                        any = true;
                     }
 
-                    writeln!(f, "    }}")?;
+                    if any {
+                        writeln!(f, "    }}")?;
+                    } else {
+                        writeln!(f, " }}")?;
+                    }
                 }
             }
         }
@@ -208,7 +234,7 @@ where
             writeln!(f, "        {} = {},", o, print_opt_wire(wire))?;
         }
 
-        writeln!(f, "    }}")?;
+        write!(f, "    }}")?;
 
         Ok(())
     }
@@ -283,6 +309,7 @@ where
                     name: id,
                 }
             )?;
+            writeln!(f)?;
         }
 
         writeln!(

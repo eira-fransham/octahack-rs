@@ -48,11 +48,11 @@ macro_rules! component_set {
             }
 
             impl $crate::params::StorageMut for InputStorage {
-                fn get_mut(&mut self, spec: &Self::Specifier) -> &mut Self::Inner{
+                fn set(&mut self, spec: &Self::Specifier, val: Self::Inner) {
                     match self {
                         $(
                             Self::$t(inner) => {
-                                inner.get_mut(&$crate::RuntimeSpecifier::from_id(spec.0))
+                                inner.set(&$crate::RuntimeSpecifier::from_id(spec.0), val)
                             },
                         )*
                     }
