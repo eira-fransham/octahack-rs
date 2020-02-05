@@ -1,13 +1,13 @@
 use crate::{
-    components::{PossiblyIter, ValueIterImplHelper},
-    context::{ContextMeta, GetGlobalInput},
+    components::{EnumerateValues, PossiblyIter, ValueIterImplHelper},
+    context::{ContextMeta, GetFunctionParam},
     params::HasStorage,
     rack::InternalWire,
     AnyComponent, Rack, RuntimeSpecifier, SpecId, Value, ValueKind,
 };
 use fixed::types::I1F15;
 use rodio::Source;
-use std::borrow::Cow;
+use std::{borrow::Cow, marker::PhantomData};
 
 trait Sources<'a> {
     type Iter;
@@ -21,13 +21,15 @@ trait Sources<'a> {
 
 fn num_audio_channels<Spec>() -> u8
 where
-    Spec: RuntimeSpecifier,
+    Spec: EnumerateValues,
 {
     let mut out = 0;
 
-    for &ty in Spec::TYPES {
+    for v in Spec::values() {
+        let ty = v.value_type();
+
         if ty.kind == ValueKind::Continuous {
-            out += ty.channels.unwrap();
+            out += ty.channels.unwrap().get();
         }
     }
 
@@ -91,8 +93,8 @@ impl<S, C, InputSpec, OutputSpec>
     AudioStreamer<rodio::source::UniformSourceIterator<S, i16>, C, InputSpec, OutputSpec>
 where
     C: AnyComponent,
-    InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
+    InputSpec: EnumerateValues,
+    OutputSpec: EnumerateValues + HasStorage<InternalWire>,
     S: Source + Iterator + 'static,
     S::Item: rodio::Sample,
 {
@@ -121,7 +123,7 @@ where
     C: AnyComponent,
     S: Source + Iterator<Item = i16> + 'static,
     InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
+    OutputSpec: EnumerateValues + HasStorage<InternalWire>,
 {
     pub fn new_unchecked(
         sample_rate: impl Into<Option<u32>>,
@@ -153,21 +155,23 @@ where
     }
 }
 
-pub struct Context<'a> {
+pub struct Context<'a, ISpec> {
     sources: Cow<'a, [i16]>,
     sample_rate: u32,
+    _marker: PhantomData<ISpec>,
 }
 
-impl<'a> ContextMeta for Context<'a> {
+impl<'a, I> ContextMeta for Context<'a, I> {
     fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
 }
 
-impl<'a, InputSpec> GetGlobalInput<InputSpec> for Context<'a>
+impl<'a, InputSpec> GetFunctionParam for Context<'a, InputSpec>
 where
     InputSpec: RuntimeSpecifier,
 {
+    type InputSpec = InputSpec;
     type Iter = <Value as ValueIterImplHelper<std::vec::IntoIter<Value>>>::AnyIter;
 
     // `None` means that this input is not wired
@@ -175,15 +179,21 @@ where
         let mut id = 0;
 
         for i in 0..spec.id() {
-            if InputSpec::from_id(i).value_type().kind == ValueKind::Continuous {
-                id += InputSpec::TYPES[i].channels.unwrap();
+            let ty = InputSpec::from_id(i).value_type();
+            if ty.kind == ValueKind::Continuous {
+                id += ty.channels.unwrap().get();
             }
         }
 
         Some(
             // TODO
-            self.sources
-                [id as usize..(id + InputSpec::TYPES[spec.id()].channels.unwrap()) as usize]
+            self.sources[id as usize
+                ..(id
+                    + InputSpec::from_id(id as _)
+                        .value_type()
+                        .channels
+                        .unwrap()
+                        .get()) as usize]
                 .iter()
                 .map(|&val| Value::from_num(I1F15::from_bits(val)))
                 .collect::<Vec<_>>()
@@ -199,8 +209,8 @@ impl<S, C, InputSpec, OutputSpec> AudioStreamer<S, C, InputSpec, OutputSpec>
 where
     S: Source + Iterator<Item = i16> + 'static,
     C: AnyComponent + 'static,
-    InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
+    InputSpec: EnumerateValues,
+    OutputSpec: EnumerateValues + HasStorage<InternalWire>,
 {
     fn update(&mut self) -> Option<OutputIter<S, C, InputSpec, OutputSpec>> {
         loop {
@@ -220,16 +230,17 @@ where
                 let ctx = Context {
                     sample_rate: self.sample_rate(),
                     sources,
+                    _marker: PhantomData,
                 };
 
-                self.rack.update::<Context>(&ctx);
+                self.rack.update::<Context<InputSpec>>(&ctx);
             }
 
             let new_id = {
                 let mut id = self.output_id;
                 loop {
-                    if let Some(&ty) = OutputSpec::TYPES.get(id) {
-                        if ty.kind == ValueKind::Continuous {
+                    if let Some(v) = OutputSpec::values().nth(id) {
+                        if v.value_type().kind == ValueKind::Continuous {
                             break Some(id);
                         } else {
                             id += 1;
@@ -243,9 +254,10 @@ where
 
             if let Some(new_id) = new_id {
                 let sources = Cow::Owned(sources);
-                let ctx: Context<'static> = Context {
+                let ctx: Context<'static, InputSpec> = Context {
                     sample_rate: self.sample_rate(),
                     sources,
+                    _marker: PhantomData,
                 };
 
                 self.output_id = new_id + 1;
@@ -259,7 +271,11 @@ where
                                 .unwrap_or_else(|_| unimplemented!())
                                 .map(|val| I1F15::from_num(val).to_bits())
                         }),
-                    min_len: OutputSpec::from_id(new_id).value_type().channels.unwrap() as usize,
+                    min_len: OutputSpec::from_id(new_id)
+                        .value_type()
+                        .channels
+                        .unwrap()
+                        .get() as usize,
                 });
             } else {
                 self.output_id = 0;
@@ -272,8 +288,8 @@ impl<S, C, InputSpec, OutputSpec> Iterator for AudioStreamer<S, C, InputSpec, Ou
 where
     S: Source + Iterator<Item = i16> + 'static,
     C: AnyComponent + 'static,
-    InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
+    InputSpec: EnumerateValues,
+    OutputSpec: EnumerateValues + HasStorage<InternalWire>,
 {
     type Item = i16;
 
@@ -295,8 +311,8 @@ impl<S, C, InputSpec, OutputSpec> rodio::Source for AudioStreamer<S, C, InputSpe
 where
     S: Source + Iterator<Item = i16> + 'static,
     C: AnyComponent + 'static,
-    InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
+    InputSpec: EnumerateValues,
+    OutputSpec: EnumerateValues + HasStorage<InternalWire>,
 {
     fn current_frame_len(&self) -> Option<usize> {
         None

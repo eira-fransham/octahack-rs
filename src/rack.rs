@@ -1,33 +1,23 @@
 use crate::{
     components::{
-        anycomponent::{AnyContext, AnyUiElement},
-        PossiblyEither,
+        anycomponent::{AnyContext, AnyMeta, AnyUiElement, AnyUiElementDisplayParamValue},
+        EnumerateValues, PossiblyEither, PossiblyIter,
     },
-    context::{ContextMeta, GetGlobalInput},
-    params::{HasStorage, ParamStorage, Storage},
-    AnyComponent, AnyInputSpec, AnyOutputSpec, AnyParamSpec, RuntimeSpecifier, SpecId, Value,
+    context::{ContextMeta, GetFunctionParam},
+    params::{EitherStorage, HasStorage, ParamStorage, Storage, StorageMut},
+    AnyComponent, AnyInputSpec, AnyOutputSpec, AnyParamSpec, MidiValue, RefRuntimeSpecifier,
+    RuntimeSpecifier, SpecId, Uid, UidGen, UidMap, Value, XOrHasher,
 };
-use fxhash::FxHashMap;
 use std::{
-    any::Any,
     fmt,
     marker::PhantomData,
-    ops::{Index, IndexMut},
+    ops::{Deref, DerefMut, Index, IndexMut},
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ElementSpecifier<Id> {
     Component { id: Id },
-    Rack,
-}
-
-impl<Id> ElementSpecifier<Id> {
-    fn fill_id<NewId>(self, f: impl FnOnce(Id) -> NewId) -> ElementSpecifier<NewId> {
-        match self {
-            Self::Component { id } => ElementSpecifier::Component { id: f(id) },
-            Self::Rack => ElementSpecifier::Rack,
-        }
-    }
+    FuncInputs,
 }
 
 pub mod marker {
@@ -40,51 +30,51 @@ pub mod marker {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct GenericWire<Marker, Id> {
-    io_index: SpecId,
-    element: ElementSpecifier<Id>,
+pub(crate) struct GenericWire<Marker, Id> {
+    pub(crate) io_index: SpecId,
+    pub(crate) element: ElementSpecifier<Id>,
     _marker: PhantomData<Marker>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Wire<Marker>(GenericWire<Marker, ComponentId>);
+pub struct Wire<Marker>(pub(crate) GenericWire<Marker, ComponentId>);
 
-pub type InternalWire = Option<Wire<marker::Output>>;
+pub type InternalWire = Option<WireSrc>;
 pub type InternalParamWire = Option<ParamWire>;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct WireSrc(GenericWire<marker::Output, usize>);
+pub type WireSrc = Wire<marker::Output>;
 
 #[derive(Debug, Clone, PartialEq)]
 enum WireDstInner {
-    Param(Value, GenericWire<marker::Param, usize>),
-    Input(GenericWire<marker::Input, usize>),
+    Param(Value, GenericWire<marker::Param, ComponentId>),
+    Input(GenericWire<marker::Input, ComponentId>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WireDst(WireDstInner);
 
 impl WireDst {
+    #[inline]
     pub fn rack_output<S: RuntimeSpecifier>(output: S) -> Self {
         WireDst(WireDstInner::Input(GenericWire {
             io_index: output.id(),
-            element: ElementSpecifier::Rack,
+            element: ElementSpecifier::FuncInputs,
             _marker: PhantomData,
         }))
     }
 
-    pub fn component_input<S: RuntimeSpecifier>(component_index: usize, input: S) -> Self {
+    #[inline]
+    pub fn component_input<S: RuntimeSpecifier>(id: ComponentId, input: S) -> Self {
         WireDst(WireDstInner::Input(GenericWire {
             io_index: input.id(),
-            element: ElementSpecifier::Component {
-                id: component_index,
-            },
+            element: ElementSpecifier::Component { id },
             _marker: PhantomData,
         }))
     }
 
+    #[inline]
     pub fn component_param<S: RuntimeSpecifier, V: Into<Value>>(
-        component_index: usize,
+        id: ComponentId,
         param: S,
         value: V,
     ) -> Self {
@@ -93,9 +83,7 @@ impl WireDst {
             value,
             GenericWire {
                 io_index: param.id(),
-                element: ElementSpecifier::Component {
-                    id: component_index,
-                },
+                element: ElementSpecifier::Component { id },
                 _marker: PhantomData,
             },
         ))
@@ -103,28 +91,20 @@ impl WireDst {
 }
 
 impl WireSrc {
-    fn fill_id(self, f: impl FnOnce(usize) -> ComponentId) -> Wire<marker::Output> {
-        Wire(GenericWire {
-            io_index: self.0.io_index,
-            element: self.0.element.fill_id(f),
-            _marker: PhantomData,
-        })
-    }
-
+    #[inline]
     pub fn rack_input<S: RuntimeSpecifier>(input: S) -> Self {
-        WireSrc(GenericWire {
+        Wire(GenericWire {
             io_index: input.id(),
-            element: ElementSpecifier::Rack,
+            element: ElementSpecifier::FuncInputs,
             _marker: PhantomData,
         })
     }
 
-    pub fn component_output<S: RuntimeSpecifier>(component_index: usize, output: S) -> Self {
-        WireSrc(GenericWire {
+    #[inline]
+    pub fn component_output<S: RuntimeSpecifier>(id: ComponentId, output: S) -> Self {
+        Wire(GenericWire {
             io_index: output.id(),
-            element: ElementSpecifier::Component {
-                id: component_index,
-            },
+            element: ElementSpecifier::Component { id },
             _marker: PhantomData,
         })
     }
@@ -134,41 +114,36 @@ impl<M, Id> GenericWire<M, Id>
 where
     ElementSpecifier<Id>: Copy,
 {
+    #[inline]
     fn element(&self) -> ElementSpecifier<Id> {
         self.element
     }
 }
 
 impl<Id> GenericWire<marker::Input, Id> {
+    #[inline]
     fn input_id(&self) -> AnyInputSpec {
         AnyInputSpec(self.io_index)
     }
 }
 
 impl<Id> GenericWire<marker::Param, Id> {
+    #[inline]
     fn param_id(&self) -> AnyParamSpec {
         AnyParamSpec(self.io_index)
     }
 }
 
 impl<Id> GenericWire<marker::Output, Id> {
+    #[inline]
     fn output_id(&self) -> AnyOutputSpec {
         AnyOutputSpec(self.io_index)
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct ComponentId(usize);
-
-impl fmt::Display for ComponentId {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "%{}", self.0)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamWire {
-    pub src: Wire<marker::Output>,
+    pub src: WireSrc,
     pub value: Value,
 }
 
@@ -179,150 +154,368 @@ struct ParamValue {
     wire: Option<ParamWire>,
 }
 
-struct TaggedComponent<C>
+pub struct ComponentMeta<C>
 where
     C: AnyComponent,
 {
-    inner: C,
-    params: C::ParamStorage,
-    inputs: C::InputStorage,
+    pub(crate) params: C::ParamStorage,
+    pub(crate) inputs: C::InputStorage,
 }
 
-impl<C> std::fmt::Debug for TaggedComponent<C>
-where
-    C: AnyComponent + std::fmt::Debug,
-    C::ParamStorage: std::fmt::Debug,
-    C::InputStorage: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.debug_struct("TaggedComponent")
-            .field("inner", &self.inner)
-            .field("params", &self.params)
-            .field("inputs", &self.inputs)
-            .finish()
-    }
-}
-
-#[derive(Default, Debug, Clone, PartialEq)]
-struct ComponentIdGen {
-    cur: usize,
-}
-
-impl ComponentIdGen {
-    fn next(&mut self) -> ComponentId {
-        let cur = self.cur;
-        self.cur += 1;
-        ComponentId(cur)
-    }
-}
-
-struct ComponentVec<C>
+pub enum Meta<C>
 where
     C: AnyComponent,
 {
-    ids: ComponentIdGen,
-    storage: FxHashMap<ComponentId, TaggedComponent<C>>,
-    indices: Vec<ComponentId>,
+    Component(ComponentMeta<C>),
+    Function {
+        func_id: FuncId,
+        // params: TODO
+        inputs: <AnyInputSpec as HasStorage<InternalWire>>::Storage,
+    },
 }
 
-impl<'a, C> IntoIterator for &'a ComponentVec<C>
-where
-    C: AnyComponent + 'a,
-{
-    type Item = (ComponentId, &'a TaggedComponent<C>);
-    type IntoIter = impl ExactSizeIterator<Item = Self::Item> + 'a;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.indices.iter().map(move |i| (*i, &self.storage[i]))
-    }
-}
-
-impl<C> std::fmt::Debug for ComponentVec<C>
-where
-    C: AnyComponent + std::fmt::Debug,
-    C::ParamStorage: std::fmt::Debug,
-    C::InputStorage: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.debug_struct("TaggedComponent")
-            .field("ids", &self.ids)
-            .field("storage", &self.storage)
-            .field("indices", &self.indices)
-            .finish()
-    }
-}
-
-impl<C> Default for ComponentVec<C>
+impl<C> Meta<C>
 where
     C: AnyComponent,
 {
-    fn default() -> Self {
-        Self {
-            ids: Default::default(),
-            storage: Default::default(),
-            indices: Default::default(),
+    fn inputs(&self) -> impl Storage<Specifier = AnyInputSpec, Inner = InternalWire> + '_ {
+        match self {
+            Self::Component(meta) => EitherStorage::Left(&meta.inputs),
+            Self::Function { inputs, .. } => EitherStorage::Right(inputs),
+        }
+    }
+
+    fn inputs_mut(
+        &mut self,
+    ) -> impl StorageMut<Specifier = AnyInputSpec, Inner = InternalWire> + '_ {
+        match self {
+            Self::Component(meta) => EitherStorage::Left(&mut meta.inputs),
+            Self::Function { inputs, .. } => EitherStorage::Right(inputs),
         }
     }
 }
 
-impl<C> ComponentVec<C>
+impl<C> Meta<C>
 where
     C: AnyComponent,
 {
-    fn push(&mut self, new: TaggedComponent<C>) -> ComponentId {
-        let new_id = self.ids.next();
-        self.storage.insert(new_id, new);
-        self.indices.push(new_id);
-        new_id
+    fn component(&self) -> Option<&ComponentMeta<C>> {
+        match self {
+            Self::Component(cmeta) => Some(cmeta),
+            _ => None,
+        }
     }
 
-    fn ids(&self) -> &[ComponentId] {
-        &self.indices
-    }
-
-    fn len(&self) -> usize {
-        self.indices.len()
+    fn component_mut(&mut self) -> Option<&mut ComponentMeta<C>> {
+        match self {
+            Self::Component(cmeta) => Some(cmeta),
+            _ => None,
+        }
     }
 }
 
-impl<C> Index<usize> for ComponentVec<C>
-where
-    C: AnyComponent,
-{
-    type Output = TaggedComponent<C>;
+#[derive(Clone, Debug)]
+pub struct MapWithPathGen<M> {
+    path: XOrHasher,
+    map: M,
+}
 
-    fn index(&self, i: usize) -> &Self::Output {
-        &self[self.ids()[i]]
+impl<M> MapWithPathGen<M> {
+    #[inline]
+    fn new(map: M) -> Self {
+        Self {
+            path: XOrHasher::default(),
+            map,
+        }
     }
 }
 
-impl<C> IndexMut<usize> for ComponentVec<C>
+pub type MapWithPath<'a, T> = MapWithPathGen<&'a UidMap<T>>;
+pub type MapWithPathMut<'a, T> = MapWithPathGen<&'a mut UidMap<T>>;
+
+impl<M> MapWithPathGen<M>
 where
-    C: AnyComponent,
+    M: Deref,
 {
-    fn index_mut(&mut self, i: usize) -> &mut Self::Output {
-        let id = self.ids()[i];
-        &mut self[id]
+    #[inline]
+    pub(crate) fn as_ref(&self) -> MapWithPathGen<&'_ M::Target> {
+        MapWithPathGen {
+            path: self.path.clone(),
+            map: &*self.map,
+        }
+    }
+
+    #[inline]
+    fn original_map(&self) -> MapWithPathGen<&M::Target> {
+        MapWithPathGen {
+            path: XOrHasher::default(),
+            map: &*self.map,
+        }
     }
 }
 
-impl<C> Index<ComponentId> for ComponentVec<C>
+impl<M> MapWithPathGen<M>
 where
-    C: AnyComponent,
+    M: DerefMut,
 {
-    type Output = TaggedComponent<C>;
-
-    fn index(&self, i: ComponentId) -> &Self::Output {
-        &self.storage[&i]
+    #[inline]
+    pub(crate) fn as_mut(&mut self) -> MapWithPathGen<&'_ mut M::Target> {
+        MapWithPathGen {
+            path: self.path.clone(),
+            map: &mut *self.map,
+        }
     }
 }
 
-impl<C> IndexMut<ComponentId> for ComponentVec<C>
+impl<'a, T> MapWithPath<'a, T> {
+    #[inline]
+    fn append_path(self, path: Uid) -> MapWithPath<'a, T> {
+        use std::hash::Hash;
+
+        let mut new_path = self.path.clone();
+        path.hash(&mut new_path);
+
+        MapWithPath {
+            path: new_path,
+            map: self.map,
+        }
+    }
+}
+
+impl<'a, T> MapWithPathMut<'a, T> {
+    #[inline]
+    fn append_path(self, path: Uid) -> MapWithPathMut<'a, T> {
+        use std::hash::Hash;
+
+        let mut new_path = self.path.clone();
+        path.hash(&mut new_path);
+
+        MapWithPathMut {
+            path: new_path,
+            map: self.map,
+        }
+    }
+}
+
+impl<T> MapWithPathMut<'_, T> {
+    #[inline]
+    fn insert(&mut self, uid: Uid, val: T) -> Option<T> {
+        use std::hash::{Hash, Hasher};
+
+        let mut new_path = self.path.clone();
+        uid.hash(&mut new_path);
+        self.map.insert(Uid::new(new_path.finish() as u32), val)
+    }
+}
+
+impl<'a, M> Index<Uid> for MapWithPathGen<M>
 where
-    C: AnyComponent,
+    M: Deref,
+    M::Target: Index<Uid>,
 {
-    fn index_mut(&mut self, i: ComponentId) -> &mut Self::Output {
-        self.storage.get_mut(&i).unwrap()
+    type Output = <M::Target as Index<Uid>>::Output;
+
+    #[inline]
+    fn index(&self, uid: Uid) -> &Self::Output {
+        use std::hash::{Hash, Hasher};
+
+        let mut new_path = self.path.clone();
+        uid.hash(&mut new_path);
+        &self.map[Uid::new(new_path.finish() as u32)]
+    }
+}
+
+impl<'a, M> IndexMut<Uid> for MapWithPathGen<M>
+where
+    M: DerefMut,
+    M::Target: IndexMut<Uid>,
+{
+    #[inline]
+    fn index_mut(&mut self, uid: Uid) -> &mut Self::Output {
+        use std::hash::{Hash, Hasher};
+
+        let mut new_path = self.path.clone();
+        uid.hash(&mut new_path);
+        &mut self.map[Uid::new(new_path.finish() as u32)]
+    }
+}
+
+impl<'a, M> Index<&'a Uid> for MapWithPathGen<M>
+where
+    M: Deref,
+    M::Target: Index<Uid>,
+{
+    type Output = <M::Target as Index<Uid>>::Output;
+
+    #[inline]
+    fn index(&self, uid: &Uid) -> &Self::Output {
+        use std::hash::{Hash, Hasher};
+
+        let mut new_path = self.path.clone();
+        uid.hash(&mut new_path);
+        &self.map[Uid::new(new_path.finish() as u32)]
+    }
+}
+
+impl<'a, M> IndexMut<&'a Uid> for MapWithPathGen<M>
+where
+    M: DerefMut,
+    M::Target: IndexMut<Uid>,
+{
+    #[inline]
+    fn index_mut(&mut self, uid: &Uid) -> &mut Self::Output {
+        use std::hash::{Hash, Hasher};
+
+        let mut new_path = self.path.clone();
+        uid.hash(&mut new_path);
+        &mut self.map[Uid::new(new_path.finish() as u32)]
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct FuncId(pub(crate) Uid);
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct ComponentId(pub(crate) Uid);
+
+impl fmt::Display for ComponentId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "%{}", (self.0))
+    }
+}
+
+impl fmt::Display for FuncId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Func-{}", (self.0))
+    }
+}
+
+// Weird and stupid trait to allow us to abstract over the fact that `Main` has a different
+// signature compared to other functions (specifically, it has a static signature). I might
+// make `Main` and other functions identical some day and remove this.
+pub trait DefsAndFuncHelper {
+    type FuncDef;
+
+    fn get<'a, M: Index<Uid, Output = FuncDef<AnyInputSpec, AnyOutputSpec>> + ?Sized>(
+        &'a self,
+        map: &'a M,
+    ) -> &'a Self::FuncDef;
+}
+
+pub trait DefsAndFuncHelperMut: DefsAndFuncHelper {
+    type AsRef<'a>: DefsAndFuncHelper<FuncDef = Self::FuncDef> + Clone;
+
+    fn as_ref(&self) -> Self::AsRef<'_>;
+
+    fn get_mut<'a, M: IndexMut<Uid, Output = FuncDef<AnyInputSpec, AnyOutputSpec>> + ?Sized>(
+        &'a mut self,
+        map: &'a mut M,
+    ) -> &'a mut Self::FuncDef;
+}
+
+impl DefsAndFuncHelper for FuncId {
+    type FuncDef = FuncDef<AnyInputSpec, AnyOutputSpec>;
+
+    #[inline]
+    fn get<'a, M: Index<Uid, Output = FuncDef<AnyInputSpec, AnyOutputSpec>> + ?Sized>(
+        &'a self,
+        map: &'a M,
+    ) -> &'a Self::FuncDef {
+        &map[self.0]
+    }
+}
+
+impl DefsAndFuncHelperMut for FuncId {
+    type AsRef<'a> = Self;
+
+    #[inline]
+    fn as_ref(&self) -> Self::AsRef<'_> {
+        *self
+    }
+
+    #[inline]
+    fn get_mut<'a, M: IndexMut<Uid, Output = FuncDef<AnyInputSpec, AnyOutputSpec>> + ?Sized>(
+        &'a mut self,
+        map: &'a mut M,
+    ) -> &'a mut Self::FuncDef {
+        &mut map[self.0]
+    }
+}
+
+impl<I, O, F> DefsAndFuncHelper for F
+where
+    F: Deref<Target = FuncDef<I, O>>,
+    O: HasStorage<InternalWire>,
+{
+    type FuncDef = F::Target;
+
+    #[inline]
+    fn get<'a, M: Index<Uid, Output = FuncDef<AnyInputSpec, AnyOutputSpec>> + ?Sized>(
+        &'a self,
+        _: &'a M,
+    ) -> &'a Self::FuncDef {
+        self
+    }
+}
+
+impl<I, O, F> DefsAndFuncHelperMut for F
+where
+    F: DerefMut<Target = FuncDef<I, O>>,
+    O: HasStorage<InternalWire> + 'static,
+    I: 'static,
+{
+    type AsRef<'any> = &'any FuncDef<I, O>;
+
+    #[inline]
+    fn as_ref(&self) -> Self::AsRef<'_> {
+        &*self
+    }
+
+    #[inline]
+    fn get_mut<'a, M: IndexMut<Uid, Output = FuncDef<AnyInputSpec, AnyOutputSpec>> + ?Sized>(
+        &'a mut self,
+        _: &'a mut M,
+    ) -> &'a mut Self::FuncDef {
+        self
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct DefsAndFunc<Map, Def> {
+    def: Def,
+    defs: Map,
+}
+
+impl<Map, Def> DefsAndFunc<Map, Def>
+where
+    Map: Deref,
+    Map::Target: Index<Uid, Output = FuncDef<AnyInputSpec, AnyOutputSpec>>,
+    Def: DefsAndFuncHelper,
+{
+    #[inline]
+    pub fn def(&self) -> &Def::FuncDef {
+        self.def.get(&*self.defs)
+    }
+
+    #[inline]
+    pub fn get(&self, uid: FuncId) -> &FuncDef<AnyInputSpec, AnyOutputSpec> {
+        &self.defs[uid.0]
+    }
+}
+
+impl<Map, Def> DefsAndFunc<Map, Def>
+where
+    Map: DerefMut,
+    Map::Target: IndexMut<Uid, Output = FuncDef<AnyInputSpec, AnyOutputSpec>>,
+    Def: DefsAndFuncHelperMut,
+{
+    #[inline]
+    pub fn def_mut(&mut self) -> &mut Def::FuncDef {
+        self.def.get_mut(&mut *self.defs)
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, uid: FuncId) -> &mut FuncDef<AnyInputSpec, AnyOutputSpec> {
+        &mut self.defs[uid.0]
     }
 }
 
@@ -331,299 +524,271 @@ where
     C: AnyComponent,
     OutputSpec: HasStorage<InternalWire>,
 {
-    components: ComponentVec<C>,
-    out_wires: OutputSpec::Storage,
-    _marker: PhantomData<(InputSpec, OutputSpec)>,
-}
-
-impl<C, I, O> std::fmt::Debug for Rack<C, I, O>
-where
-    C: AnyComponent + std::fmt::Debug,
-    O: HasStorage<InternalWire>,
-    O::Storage: std::fmt::Debug,
-    C::ParamStorage: std::fmt::Debug,
-    C::InputStorage: std::fmt::Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.debug_struct("Rack")
-            .field("components", &self.components)
-            .field("out_wires", &self.out_wires)
-            .finish()
-    }
+    uid_gen: UidGen,
+    main: FuncDef<InputSpec, OutputSpec>,
+    pub(crate) funcs: Funcs,
+    pub(crate) meta_storage: UidMap<Meta<C>>,
+    pub(crate) state_storage: UidMap<C>,
 }
 
 impl<C, InputSpec, OutputSpec> Rack<C, InputSpec, OutputSpec>
 where
+    C: AnyComponent,
     OutputSpec: HasStorage<InternalWire>,
     OutputSpec::Storage: Default,
-    C: AnyComponent,
 {
+    #[inline]
     pub fn new() -> Self {
         Rack {
-            components: Default::default(),
-            out_wires: Default::default(),
-            _marker: PhantomData,
+            uid_gen: UidGen::new(),
+            main: FuncDef::new(),
+            funcs: Default::default(),
+            meta_storage: Default::default(),
+            state_storage: Default::default(),
         }
-    }
-}
-
-impl<C, InputSpec, OutputSpec> fmt::Display for Rack<C, InputSpec, OutputSpec>
-where
-    InputSpec: RuntimeSpecifier + fmt::Display,
-    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire> + fmt::Display + Clone,
-    C: AnyComponent,
-    for<'any> &'any C: AnyUiElement<'any>,
-{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fn printvalue(val: &dyn Any, f: &mut fmt::Formatter) -> fmt::Result {
-            if let Some(value) = val.downcast_ref::<Value>() {
-                write!(f, "{}", value)
-            } else {
-                Err(fmt::Error)
-            }
-        }
-
-        write!(f, "def main(")?;
-        let mut ispeciter = InputSpec::VALUES.iter();
-
-        if let Some(i) = ispeciter.next() {
-            write!(f, "{}", i)?;
-        }
-
-        for i in ispeciter {
-            write!(f, ", {}", i)?;
-        }
-
-        writeln!(f, "):")?;
-
-        for (i, component) in &self.components {
-            write!(f, "    {}: {{", i)?;
-            let mut onameiter = component.inner.output_names();
-
-            if let Some(o) = onameiter.next() {
-                write!(f, " {}", o)?;
-            }
-
-            for o in onameiter {
-                write!(f, ", {}", o)?;
-            }
-
-            writeln!(f, " }} = {} {{", component.inner.name())?;
-
-            for (_i, p) in component.inner.param_names().enumerate() {
-                writeln!(f, "        {} = {{TODO}},", p)?;
-            }
-
-            let inameiter = component.inner.input_names().enumerate();
-
-            if !inameiter.is_empty() {
-                writeln!(f)?;
-            }
-
-            for (i, input) in inameiter {
-                let wire = component.inputs.get(AnyInputSpec(i));
-
-                write!(f, "        {} = ", input)?;
-                match wire {
-                    None => write!(f, "NONE")?,
-                    Some(Wire(GenericWire {
-                        io_index,
-                        element: ElementSpecifier::Rack,
-                        ..
-                    })) => write!(f, "{}", InputSpec::VALUES[*io_index])?,
-                    Some(Wire(GenericWire {
-                        io_index,
-                        element: ElementSpecifier::Component { id },
-                        ..
-                    })) => write!(
-                        f,
-                        "{}->{}",
-                        id,
-                        self.components[*id]
-                            .inner
-                            .input_names()
-                            .nth(*io_index)
-                            .unwrap()
-                    )?,
-                }
-
-                writeln!(f, ",")?;
-            }
-
-            writeln!(f, "    }}")?;
-        }
-
-        writeln!(f)?;
-
-        writeln!(f, "    return {{")?;
-
-        for o in OutputSpec::VALUES {
-            let wire = self.out_wires.get(o.clone());
-
-            write!(f, "        {} = ", o)?;
-            match wire {
-                None => write!(f, "NONE")?,
-                Some(Wire(GenericWire {
-                    io_index,
-                    element: ElementSpecifier::Rack,
-                    ..
-                })) => write!(f, "{}", InputSpec::VALUES[*io_index])?,
-                Some(Wire(GenericWire {
-                    io_index,
-                    element: ElementSpecifier::Component { id },
-                    ..
-                })) => write!(
-                    f,
-                    "{}->{}",
-                    id,
-                    self.components[*id]
-                        .inner
-                        .output_names()
-                        .nth(*io_index)
-                        .unwrap()
-                )?,
-            }
-
-            writeln!(f, ",")?;
-        }
-
-        writeln!(f, "    }}")?;
-
-        Ok(())
     }
 }
 
 impl<C, InputSpec, OutputSpec> Rack<C, InputSpec, OutputSpec>
 where
-    InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
     C: AnyComponent,
+    OutputSpec: HasStorage<InternalWire>,
 {
-    pub fn update<Ctx>(&mut self, ctx: &Ctx)
-    where
-        Ctx: GetGlobalInput<InputSpec> + ContextMeta,
-    {
-        self.as_mut_slice().update(ctx);
-    }
-
-    // TODO: Return a result
-    pub fn wire(&mut self, src: WireSrc, dst: WireDst) {
-        let filled_output = src.fill_id(|index| self.components.ids()[index]);
-        match dst.0 {
-            WireDstInner::Input(dst) => match dst.element() {
-                ElementSpecifier::Component { id } => {
-                    *self.components[id].inputs.get_mut(dst.input_id()) = Some(filled_output);
-                }
-                ElementSpecifier::Rack => {
-                    *self
-                        .out_wires
-                        .get_mut(OutputSpec::from_id(dst.input_id().0)) = Some(filled_output)
-                }
+    #[inline]
+    pub fn main(&self) -> FuncInstanceRef<'_, C, &FuncDef<InputSpec, OutputSpec>> {
+        FuncInstanceRef {
+            uid_gen: (),
+            defs_and_func: DefsAndFunc {
+                defs: &self.funcs,
+                def: &self.main,
             },
-            WireDstInner::Param(val, dst) => match dst.element() {
-                ElementSpecifier::Component { id } => {
-                    *self.components[id]
-                        .params
-                        .get_mut(dst.param_id())
-                        .1
-                        .downcast_mut::<InternalParamWire>()
-                        .unwrap() = Some(ParamWire {
-                        value: val,
-                        src: filled_output,
-                    })
-                }
-                ElementSpecifier::Rack => unimplemented!(),
-            },
+            meta_storage: &self.meta_storage,
+            state_storage: MapWithPath::new(&self.state_storage),
         }
     }
 
-    pub fn set_param<S: RuntimeSpecifier, V: 'static>(
-        &mut self,
-        component: usize,
-        param: S,
-        value: V,
-    ) {
-        let (v, _) = self.components[component]
-            .params
-            .get_mut(AnyParamSpec(param.id()));
-        let val = v.downcast_mut::<V>().expect("Incorrect param type");
-        *val = value;
+    #[inline]
+    pub fn main_mut(&mut self) -> FuncInstanceMut<'_, C, &mut FuncDef<InputSpec, OutputSpec>> {
+        FuncInstanceMut {
+            uid_gen: &mut self.uid_gen,
+            defs_and_func: DefsAndFunc {
+                defs: &mut self.funcs,
+                def: &mut self.main,
+            },
+            meta_storage: &mut self.meta_storage,
+            state_storage: MapWithPathMut::new(&mut self.state_storage),
+        }
     }
 
-    pub fn new_component(&mut self, component: impl Into<C>) -> usize {
-        let component = component.into();
-        let out = self.components.len();
-        let params = component.param_default();
-        let inputs = component.input_default();
+    #[inline]
+    pub fn new_func(&mut self) -> FuncId {
+        let id = self.uid_gen.next();
+        self.funcs.insert(id, FuncDef::new());
+        FuncId(id)
+    }
 
-        self.components.push(TaggedComponent {
-            inner: component,
-            inputs,
-            params,
-        });
+    #[inline]
+    pub fn func(&self, id: FuncId) -> FuncInstanceRef<'_, C, FuncId> {
+        FuncInstanceRef {
+            uid_gen: (),
+            defs_and_func: DefsAndFunc {
+                defs: &self.funcs,
+                def: id,
+            },
+            meta_storage: &self.meta_storage,
+            state_storage: MapWithPath::new(&self.state_storage),
+        }
+    }
 
-        out
+    #[inline]
+    pub fn func_mut(&mut self, id: FuncId) -> FuncInstanceMut<'_, C, FuncId> {
+        FuncInstanceMut {
+            uid_gen: &mut self.uid_gen,
+            defs_and_func: DefsAndFunc {
+                defs: &mut self.funcs,
+                def: id,
+            },
+            meta_storage: &mut self.meta_storage,
+            state_storage: MapWithPathMut::new(&mut self.state_storage),
+        }
+    }
+}
+
+impl<C, InputSpec, OutputSpec> Rack<C, InputSpec, OutputSpec>
+where
+    C: AnyComponent,
+    OutputSpec: HasStorage<InternalWire>,
+    InputSpec: RuntimeSpecifier + 'static,
+    OutputSpec: RuntimeSpecifier + 'static,
+{
+    #[inline]
+    pub fn update<Ctx>(&mut self, ctx: &Ctx)
+    where
+        Ctx: GetFunctionParam<InputSpec = InputSpec> + ContextMeta,
+    {
+        self.main_mut().update(ctx)
     }
 
     /// Get a specific output of this rack.
+    /// #[inline]
     pub fn output<'a, Ctx: 'a>(
         &'a self,
         spec: OutputSpec,
         ctx: &'a Ctx,
     ) -> Option<PossiblyEither<C::OutputIter, Ctx::Iter>>
     where
-        Ctx: GetGlobalInput<InputSpec> + ContextMeta,
+        Ctx: GetFunctionParam<InputSpec = InputSpec> + ContextMeta,
     {
-        let wire = (*self.out_wires.get(spec))?;
-
-        let out = self.as_slice().output(wire, ctx);
-
-        Some(out)
-    }
-
-    fn as_slice(&self) -> RackSlice<&'_ ComponentVec<C>, InputSpec> {
-        RackSlice {
-            components: &self.components,
-            _marker: PhantomData::<InputSpec>,
-        }
-    }
-
-    fn as_mut_slice(&mut self) -> RackSlice<&'_ mut ComponentVec<C>, InputSpec> {
-        RackSlice {
-            components: &mut self.components,
-            _marker: PhantomData::<InputSpec>,
-        }
+        self.main().output(spec, ctx)
     }
 }
 
-// At one point we cached intermediate values, but I think that the
-struct RackSlice<Components, InputSpec> {
-    components: Components,
-    _marker: PhantomData<InputSpec>,
-}
+type Funcs = UidMap<FuncDef<AnyInputSpec, AnyOutputSpec>>;
 
-impl<C, I> Clone for RackSlice<C, I>
+pub struct FuncDef<InputSpec, OutputSpec>
 where
-    C: Clone,
+    OutputSpec: HasStorage<InternalWire>,
 {
-    fn clone(&self) -> Self {
-        Self {
-            components: self.components.clone(),
+    pub(crate) statements: Vec<ComponentId>,
+    pub(crate) out_wires: OutputSpec::Storage,
+    _marker: PhantomData<(InputSpec, OutputSpec)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FuncInstanceGen<U, D, MS, SS> {
+    uid_gen: U,
+    pub(crate) defs_and_func: D,
+    pub(crate) meta_storage: MS,
+    pub(crate) state_storage: SS,
+}
+
+impl<U, M, D, MS, SS> FuncInstanceGen<U, DefsAndFunc<M, D>, MS, SS>
+where
+    M: Deref,
+    M::Target: Index<Uid, Output = FuncDef<AnyInputSpec, AnyOutputSpec>>,
+    D: DefsAndFuncHelper,
+{
+    #[inline]
+    pub fn def(&self) -> &D::FuncDef {
+        self.defs_and_func.def()
+    }
+}
+
+impl<U, M, D, MS, SS> FuncInstanceGen<U, DefsAndFunc<M, D>, MS, SS>
+where
+    M: DerefMut,
+    M::Target: IndexMut<Uid, Output = FuncDef<AnyInputSpec, AnyOutputSpec>>,
+    D: DefsAndFuncHelperMut,
+{
+    #[inline]
+    pub fn def_mut(&mut self) -> &mut D::FuncDef {
+        self.defs_and_func.def_mut()
+    }
+}
+
+pub type FuncInstanceRef<'a, C, Def> =
+    FuncInstanceGen<(), DefsAndFunc<&'a Funcs, Def>, &'a UidMap<Meta<C>>, MapWithPath<'a, C>>;
+
+pub type FuncInstanceMut<'a, C, Def> = FuncInstanceGen<
+    &'a mut UidGen,
+    DefsAndFunc<&'a mut Funcs, Def>,
+    &'a mut UidMap<Meta<C>>,
+    MapWithPathMut<'a, C>,
+>;
+
+impl<InputSpec, OutputSpec> FuncDef<InputSpec, OutputSpec>
+where
+    OutputSpec: HasStorage<InternalWire>,
+    OutputSpec::Storage: Default,
+{
+    #[inline]
+    fn new() -> Self {
+        FuncDef {
+            statements: Default::default(),
+            out_wires: Default::default(),
             _marker: PhantomData,
         }
     }
 }
 
-pub struct RackContext<'a, Ctx, C, I>
-where
-    C: AnyComponent,
-{
-    ctx: &'a Ctx,
-    next: RackSlice<&'a ComponentVec<C>, I>,
-    cur: &'a TaggedComponent<C>,
+pub trait FuncContext: ContextMeta {
+    type MainCtx: GetFunctionParam + ContextMeta;
+    type Component: AnyComponent;
+
+    fn read_wire(
+        &self,
+        functions: &Funcs,
+        wire: Wire<marker::Output>,
+    ) -> Option<
+        PossiblyEither<
+            <Self::Component as AnyComponent>::OutputIter,
+            <Self::MainCtx as GetFunctionParam>::Iter,
+        >,
+    >;
+    fn state(&self) -> MapWithPath<'_, Self::Component>;
+    fn meta(&self) -> &UidMap<Meta<Self::Component>>;
 }
 
-impl<'a, Ctx, C, I> ContextMeta for RackContext<'a, Ctx, C, I>
+trait FuncContextMut: FuncContext {
+    fn state_mut(&mut self) -> MapWithPathMut<'_, Self::Component>;
+}
+
+trait Update: FuncContextMut {
+    fn update(&mut self, functions: &Funcs, statements: &[ComponentId]);
+}
+
+impl<T> Update for T
+where
+    T: FuncContextMut,
+{
+    #[inline]
+    fn update(&mut self, functions: &Funcs, statements: &[ComponentId]) {
+        for id in statements {
+            match &self.meta()[id.0] {
+                Meta::Component(cur_meta) => {
+                    let new = self.state()[&id.0].update(&SingleComponentCtx {
+                        ctx: &*self,
+                        functions,
+                        cur_meta,
+                    });
+
+                    self.state_mut().insert(id.0, new);
+                }
+                Meta::Function { func_id, .. } => {
+                    let fid = func_id.0;
+
+                    RecurseContext {
+                        // We need to use `dyn` here because otherwise this type is infinitely recursive
+                        // (Funnily, Rust doesn't notice this, it just hangs at the very last stage of
+                        // compilation)
+                        inner: self as &mut dyn FuncContextMut<
+                            MainCtx = Self::MainCtx,
+                            Component = Self::Component,
+                        >,
+                        path: *id,
+                    }
+                    .update(functions, &functions[fid].statements)
+                }
+            }
+        }
+    }
+}
+
+struct TopLevelContext<'a, Ctx, Component, State>
+where
+    Component: AnyComponent,
+{
+    ctx: &'a Ctx,
+    state: State,
+    meta: &'a UidMap<Meta<Component>>,
+}
+
+struct RecurseContext<Inner> {
+    inner: Inner,
+    path: ComponentId,
+}
+
+impl<Ctx, C, M> ContextMeta for TopLevelContext<'_, Ctx, C, M>
 where
     C: AnyComponent,
     Ctx: ContextMeta,
@@ -633,92 +798,401 @@ where
     }
 }
 
-impl<'a, Ctx, C, I> AnyContext for RackContext<'a, Ctx, C, I>
+impl<Ctx, Component, M> FuncContext for TopLevelContext<'_, Ctx, Component, MapWithPathGen<M>>
 where
-    C: AnyComponent,
-    I: RuntimeSpecifier,
-    Ctx: GetGlobalInput<I> + ContextMeta,
+    Ctx: GetFunctionParam + ContextMeta,
+    Ctx::InputSpec: RuntimeSpecifier,
+    M: Deref<Target = UidMap<Component>>,
+    Component: AnyComponent,
 {
-    type ParamStorage = C::ParamStorage;
-    type InputStorage = C::InputStorage;
-    type Iter = PossiblyEither<C::OutputIter, Ctx::Iter>;
+    type MainCtx = Ctx;
+    type Component = Component;
 
-    fn params(&self) -> &Self::ParamStorage {
-        &self.cur.params
-    }
-
-    fn inputs(&self) -> &Self::InputStorage {
-        &self.cur.inputs
-    }
-
-    fn read_wire(&self, wire: Wire<marker::Output>) -> Self::Iter {
-        self.next.output(wire, self.ctx)
-    }
-}
-
-impl<C, InputSpec> RackSlice<&'_ mut ComponentVec<C>, InputSpec>
-where
-    C: AnyComponent,
-    InputSpec: RuntimeSpecifier,
-{
-    fn update<Ctx>(&mut self, ctx: &Ctx)
-    where
-        Ctx: GetGlobalInput<InputSpec> + ContextMeta,
-    {
-        for i in 0..self.components.len() {
-            let new = {
-                let cur = &self.components[i];
-
-                cur.inner.update(&RackContext {
-                    ctx,
-                    next: RackSlice {
-                        components: &*self.components,
-                        _marker: PhantomData::<InputSpec>,
-                    },
-                    cur,
-                })
-            };
-
-            self.components[i].inner = new;
-        }
-    }
-}
-
-impl<C, InputSpec> RackSlice<&'_ ComponentVec<C>, InputSpec>
-where
-    C: AnyComponent,
-    InputSpec: RuntimeSpecifier,
-{
-    fn output<'a, Ctx>(
-        &'a self,
+    fn read_wire(
+        &self,
+        functions: &Funcs,
         Wire(wire): Wire<marker::Output>,
-        ctx: &'a Ctx,
-    ) -> PossiblyEither<C::OutputIter, Ctx::Iter>
-    where
-        Ctx: GetGlobalInput<InputSpec> + ContextMeta,
-    {
+    ) -> Option<
+        PossiblyEither<
+            <Self::Component as AnyComponent>::OutputIter,
+            <Self::MainCtx as GetFunctionParam>::Iter,
+        >,
+    > {
         match wire.element() {
             ElementSpecifier::Component { id } => {
-                // TODO: We will never allow backwards- or self-wiring, so maybe we can have some
-                //       safe abstraction that allows us to omit checks in the `split_at_mut` and
-                //       here.
-                let cur = &self.components[id];
+                match &self.meta()[&id.0] {
+                    Meta::Component(cur_meta) => {
+                        let comp = &self.state()[&id.0];
 
-                let out = cur.inner.output(
+                        Some(PossiblyEither::Left(comp.output(
+                            AnyOutputSpec(wire.output_id().0),
+                            &SingleComponentCtx {
+                                ctx: &*self,
+                                functions,
+                                cur_meta,
+                            },
+                        )))
+                    }
+                    Meta::Function { func_id, .. } => {
+                        RecurseContext {
+                            // We need to use `dyn` here because otherwise this type is infinitely recursive
+                            // (Funnily, Rust doesn't notice this, it just hangs at the very last stage of
+                            // compilation)
+                            inner: self as &dyn FuncContext<
+                                MainCtx = Self::MainCtx,
+                                Component = Self::Component,
+                            >,
+                            path: id,
+                        }
+                        .read_wire(
+                            functions,
+                            functions[func_id.0]
+                                .out_wires
+                                .get(&wire.output_id())
+                                .as_ref()?
+                                .clone(),
+                        )
+                    }
+                }
+            }
+            ElementSpecifier::FuncInputs => self
+                .ctx
+                .input(Ctx::InputSpec::from_id(wire.io_index))
+                .map(PossiblyEither::Right),
+        }
+    }
+
+    fn state(&self) -> MapWithPath<'_, Self::Component> {
+        self.state.as_ref()
+    }
+
+    fn meta(&self) -> &UidMap<Meta<Self::Component>> {
+        self.meta
+    }
+}
+
+impl<Ctx, Component, M> FuncContextMut for TopLevelContext<'_, Ctx, Component, MapWithPathGen<M>>
+where
+    Ctx: GetFunctionParam + ContextMeta,
+    Ctx::InputSpec: RuntimeSpecifier,
+    M: DerefMut<Target = UidMap<Component>>,
+    Component: AnyComponent,
+{
+    fn state_mut(&mut self) -> MapWithPathMut<'_, Self::Component> {
+        self.state.as_mut()
+    }
+}
+
+impl<Inner> ContextMeta for RecurseContext<Inner>
+where
+    Inner: Deref,
+    Inner::Target: ContextMeta,
+{
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+}
+
+impl<Inner> FuncContext for RecurseContext<Inner>
+where
+    Inner: Deref,
+    Inner::Target: FuncContext,
+{
+    type MainCtx = <Inner::Target as FuncContext>::MainCtx;
+    type Component = <Inner::Target as FuncContext>::Component;
+
+    fn read_wire(
+        &self,
+        functions: &Funcs,
+        Wire(wire): Wire<marker::Output>,
+    ) -> Option<
+        PossiblyEither<
+            <Self::Component as AnyComponent>::OutputIter,
+            <Self::MainCtx as GetFunctionParam>::Iter,
+        >,
+    > {
+        match wire.element() {
+            ElementSpecifier::Component { id } => {
+                let cur_meta = self.meta()[&id.0].component().unwrap();
+                let comp = &self.state()[&id.0];
+
+                let out = comp.output(
                     AnyOutputSpec(wire.output_id().0),
-                    &RackContext {
-                        ctx,
-                        next: self.clone(),
-                        cur,
+                    &SingleComponentCtx {
+                        ctx: &*self,
+                        functions,
+                        cur_meta,
                     },
                 );
 
-                PossiblyEither::Left(out)
+                Some(PossiblyEither::Left(out))
             }
-            ElementSpecifier::Rack => ctx
-                .input(InputSpec::from_id(wire.io_index))
-                .map(PossiblyEither::Right)
-                .unwrap(),
+            ElementSpecifier::FuncInputs => match &self.inner.meta()[self.path.0] {
+                Meta::Function { inputs, .. } => {
+                    match inputs.get(&AnyInputSpec(wire.output_id().0)) {
+                        Some(wire) => self.inner.read_wire(functions, *wire),
+                        None => None,
+                    }
+                }
+                _ => unreachable!(),
+            },
         }
+    }
+
+    fn state(&self) -> MapWithPath<'_, Self::Component> {
+        self.inner.state().append_path(self.path.0)
+    }
+
+    fn meta(&self) -> &UidMap<Meta<Self::Component>> {
+        self.inner.meta()
+    }
+}
+
+impl<Inner> FuncContextMut for RecurseContext<Inner>
+where
+    Inner: DerefMut,
+    Inner::Target: FuncContextMut,
+{
+    fn state_mut(&mut self) -> MapWithPathMut<'_, Self::Component> {
+        self.inner.state_mut().append_path(self.path.0)
+    }
+}
+
+impl<C, InputSpec, OutputSpec, Def, M>
+    FuncInstanceGen<
+        &'_ mut UidGen,
+        DefsAndFunc<M, Def>,
+        &'_ mut UidMap<Meta<C>>,
+        MapWithPathMut<'_, C>,
+    >
+where
+    InputSpec: RuntimeSpecifier,
+    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
+    C: AnyComponent,
+    M: Deref<Target = Funcs>,
+    Def: DefsAndFuncHelper<FuncDef = FuncDef<InputSpec, OutputSpec>> + Clone,
+{
+}
+
+impl<C, InputSpec, OutputSpec, Def> FuncInstanceMut<'_, C, Def>
+where
+    InputSpec: RuntimeSpecifier,
+    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
+    C: AnyComponent,
+    Def: DefsAndFuncHelperMut<FuncDef = FuncDef<InputSpec, OutputSpec>>,
+{
+    // TODO: Return a result
+    // #[inline]
+    pub fn wire(&mut self, src: WireSrc, dst: WireDst) {
+        match dst.0 {
+            WireDstInner::Input(dst) => match dst.element() {
+                ElementSpecifier::Component { id } => {
+                    *self.meta_storage[&id.0]
+                        .inputs_mut()
+                        .get_mut(&dst.input_id()) = Some(src);
+                }
+                ElementSpecifier::FuncInputs => {
+                    *self
+                        .def_mut()
+                        .out_wires
+                        .get_mut(&OutputSpec::from_id(dst.input_id().0)) = Some(src)
+                }
+            },
+            WireDstInner::Param(val, dst) => match dst.element() {
+                ElementSpecifier::Component { id } => {
+                    // TODO: Allow functions to have parameters
+                    *self.meta_storage[&id.0]
+                        .component_mut()
+                        .unwrap()
+                        .params
+                        .get_mut(&dst.param_id())
+                        .1
+                        .downcast_mut::<InternalParamWire>()
+                        .unwrap() = Some(ParamWire { value: val, src })
+                }
+                ElementSpecifier::FuncInputs => unimplemented!(),
+            },
+        }
+    }
+
+    #[inline]
+    pub fn update<Ctx>(&mut self, ctx: &Ctx)
+    where
+        Ctx: GetFunctionParam<InputSpec = InputSpec> + ContextMeta,
+    {
+        TopLevelContext {
+            ctx,
+            meta: &mut *self.meta_storage,
+            state: self.state_storage.as_mut(),
+        }
+        .update(
+            &self.defs_and_func.defs,
+            &self.defs_and_func.def().statements,
+        )
+    }
+
+    #[inline]
+    pub fn set_param<S: RuntimeSpecifier, V: 'static>(
+        &mut self,
+        component: ComponentId,
+        param: S,
+        value: V,
+    ) {
+        let (v, _) = self.meta_storage[&component.0]
+            .component_mut()
+            .unwrap()
+            .params
+            .get_mut(&AnyParamSpec(param.id()));
+        let val = v.downcast_mut::<V>().expect("Incorrect param type");
+        *val = value;
+    }
+
+    #[inline]
+    pub fn push_component(&mut self, component: impl Into<C>) -> ComponentId {
+        let component = component.into();
+        let params = component.param_default();
+        let inputs = component.input_default();
+
+        let uid = self.uid_gen.next();
+
+        self.meta_storage
+            .insert(uid, Meta::Component(ComponentMeta { inputs, params }));
+        self.state_storage.insert(uid, component);
+        let cid = ComponentId(uid);
+        self.def_mut().statements.push(cid);
+
+        cid
+    }
+}
+
+impl<C, InputSpec, OutputSpec, Def> FuncInstanceMut<'_, C, Def>
+where
+    InputSpec: RuntimeSpecifier,
+    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
+    C: AnyComponent + Clone,
+    Def: DefsAndFuncHelperMut<FuncDef = FuncDef<InputSpec, OutputSpec>>,
+{
+    #[inline]
+    pub fn push_function_call(&mut self, fid: FuncId) -> ComponentId {
+        fn add_function_state<C>(
+            defs: &Funcs,
+            meta: &UidMap<Meta<C>>,
+            mut state: MapWithPathMut<'_, C>,
+            statements: &[ComponentId],
+        ) where
+            C: AnyComponent + Clone,
+        {
+            for id in statements {
+                match &meta[id.0] {
+                    Meta::Component { .. } => {
+                        state.insert(id.0, state.original_map()[&id.0].clone());
+                    }
+                    Meta::Function { func_id, .. } => add_function_state(
+                        defs,
+                        meta,
+                        state.as_mut().append_path(id.0),
+                        &defs[func_id.0].statements,
+                    ),
+                }
+            }
+        }
+
+        let new_id = self.uid_gen.next();
+        self.meta_storage.insert(
+            new_id,
+            Meta::Function {
+                func_id: fid,
+                inputs: Default::default(),
+            },
+        );
+        self.def_mut().statements.push(ComponentId(new_id));
+
+        add_function_state(
+            &*self.defs_and_func.defs,
+            self.meta_storage,
+            self.state_storage.as_mut().append_path(new_id),
+            &self.defs_and_func.get(fid).statements,
+        );
+
+        ComponentId(new_id)
+    }
+}
+
+impl<C, InputSpec, OutputSpec, Def> FuncInstanceRef<'_, C, Def>
+where
+    InputSpec: RuntimeSpecifier,
+    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
+    Def: DefsAndFuncHelper<FuncDef = FuncDef<InputSpec, OutputSpec>> + Clone,
+    C: AnyComponent,
+{
+    /// Get a specific output of this function.
+    /// #[inline]
+    pub fn output<'a, Ctx: 'a>(
+        &'a self,
+        spec: OutputSpec,
+        ctx: &'a Ctx,
+    ) -> Option<PossiblyEither<C::OutputIter, Ctx::Iter>>
+    where
+        Ctx: GetFunctionParam<InputSpec = InputSpec> + ContextMeta,
+    {
+        let wire = (*self.def().out_wires.get(&spec))?;
+
+        TopLevelContext {
+            ctx,
+            state: self.state_storage.as_ref(),
+            meta: self.meta_storage,
+        }
+        .read_wire(self.defs_and_func.defs, wire)
+    }
+}
+
+pub struct SingleComponentCtx<'a, Ctx, C>
+where
+    C: AnyComponent,
+{
+    ctx: &'a Ctx,
+    functions: &'a Funcs,
+    cur_meta: &'a ComponentMeta<C>,
+}
+
+impl<'a, Ctx, C> ContextMeta for SingleComponentCtx<'a, Ctx, C>
+where
+    C: AnyComponent,
+    Ctx: ContextMeta,
+{
+    #[inline]
+    fn sample_rate(&self) -> u32 {
+        self.ctx.sample_rate()
+    }
+}
+
+impl<'a, Ctx, C> AnyMeta for SingleComponentCtx<'a, Ctx, C>
+where
+    C: AnyComponent,
+{
+    type ParamStorage = C::ParamStorage;
+    type InputStorage = C::InputStorage;
+
+    #[inline]
+    fn params(&self) -> &Self::ParamStorage {
+        &self.cur_meta.params
+    }
+
+    #[inline]
+    fn inputs(&self) -> &Self::InputStorage {
+        &self.cur_meta.inputs
+    }
+}
+
+impl<'a, Ctx, C> AnyContext for SingleComponentCtx<'a, Ctx, C>
+where
+    C: AnyComponent,
+    Ctx: FuncContext<Component = C>,
+{
+    type Iter = PossiblyEither<C::OutputIter, <Ctx::MainCtx as GetFunctionParam>::Iter>;
+
+    #[inline]
+    fn read_wire(&self, wire: WireSrc) -> Option<Self::Iter> {
+        self.ctx.read_wire(self.functions, wire)
     }
 }

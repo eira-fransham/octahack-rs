@@ -39,29 +39,29 @@ mod test {
     use self::any::Specifier;
 
     #[test]
-    fn correct_max_out_size() {
-        assert_eq!(
-            super::synth::output::Specifier::TYPES.len(),
-            super::OctahackComponent::MAX_OUTPUT_COUNT
-        );
-    }
-
-    #[test]
     fn circular_wiring() {
         use std::iter;
 
         let mut rack = Rack::<super::OctahackComponent, Specifier, Specifier>::new();
 
-        let amp = rack.new_component(super::Amplifier);
-        rack.wire(
+        let mut func = rack.main_mut();
+
+        let amp = func.push_component(super::Amplifier);
+        func.wire(
             WireSrc::rack_input(Specifier::OneChannel),
-            WireDst::component_input(amp, super::amplifier::Specifier::Only),
+            WireDst::component_input(amp, super::amplifier::input::Specifier::Input),
         );
-        rack.wire(
-            WireSrc::component_output(amp, super::amplifier::Specifier::Only),
-            WireDst::component_input(amp, super::amplifier::Specifier::Only),
+        func.wire(
+            WireSrc::component_output(amp, super::amplifier::output::Specifier::Output),
+            WireDst::component_input(amp, super::amplifier::input::Specifier::Input),
         );
-        rack.set_param(amp, super::amplifier::Specifier::Only, Value::max_value());
+        func.set_param(
+            amp,
+            super::amplifier::params::Specifier::Amount,
+            Value::max_value(),
+        );
+
+        println!("{}", rack);
 
         let mut streamer = crate::output::AudioStreamer::new_convert(
             None,

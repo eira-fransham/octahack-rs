@@ -60,11 +60,12 @@ impl<T, Kind> FileAccess<Kind> for T {
     }
 }
 
-pub trait GetGlobalInput<Spec> {
+pub trait GetFunctionParam {
+    type InputSpec;
     type Iter: PossiblyIter<Value> + PossiblyIter<MidiEventType>;
 
     // `None` means that this input is not wired
-    fn input(&self, spec: Spec) -> Option<Self::Iter>;
+    fn input(&self, spec: Self::InputSpec) -> Option<Self::Iter>;
 }
 
 pub trait GetInput<Spec> {
@@ -161,11 +162,13 @@ where
             .try_into()
             .unwrap_or_else(|_| unreachable!())
             .get()
-            .map(|wire| {
-                self.ctx
-                    .read_wire(wire)
-                    .try_iter()
-                    .unwrap_or_else(|_| unreachable!())
+            .and_then(|wire| {
+                Some(
+                    self.ctx
+                        .read_wire(wire)?
+                        .try_iter()
+                        .unwrap_or_else(|_| unreachable!()),
+                )
             })
     }
 }

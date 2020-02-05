@@ -2,49 +2,67 @@ pub mod anycomponent;
 
 pub use anycomponent::{AnyComponent, AnyInputSpec, AnyOutputSpec, AnyParamSpec, Types};
 
-use crate::{Context, Value, ValueType};
+use crate::{
+    params::{HasParamStorage, Key},
+    Context, Value, ValueType,
+};
 use itertools::Either;
 use nom_midi::MidiEventType;
+use std::fmt;
 
 // TODO: This can probably be `u8`
 pub type SpecId = usize;
 
-pub trait RuntimeSpecifier: Sized + 'static {
-    const VALUES: &'static [Self];
-    const TYPES: &'static [ValueType];
-
+pub trait RefRuntimeSpecifier: fmt::Display {
     fn id(&self) -> SpecId;
-    fn from_id(id: SpecId) -> Self;
-
-    fn value_type(&self) -> ValueType {
-        Self::TYPES[self.id()]
-    }
+    fn value_type(&self) -> ValueType;
 }
 
-impl RuntimeSpecifier for ! {
-    const VALUES: &'static [Self] = &[];
-    const TYPES: &'static [ValueType] = &[];
+pub trait RuntimeSpecifier: RefRuntimeSpecifier + Sized {
+    fn from_id(id: SpecId) -> Self;
+}
 
+pub trait EnumerateValues: RuntimeSpecifier + 'static {
+    type Iter: ExactSizeIterator<Item = &'static Self> + Clone;
+
+    fn values() -> Self::Iter;
+}
+
+impl RefRuntimeSpecifier for ! {
     fn id(&self) -> SpecId {
         unreachable!()
     }
 
+    fn value_type(&self) -> ValueType {
+        unreachable!()
+    }
+}
+
+impl RuntimeSpecifier for ! {
     fn from_id(_: SpecId) -> Self {
         unreachable!()
     }
 }
 
-pub trait Component: Sized {
+impl EnumerateValues for ! {
+    type Iter = std::iter::Empty<&'static !>;
+
+    fn values() -> Self::Iter {
+        std::iter::empty()
+    }
+}
+
+pub trait Component: Clone + Sized {
     type InputSpecifier;
     type OutputSpecifier;
-    type ParamSpecifier: crate::params::HasParamStorage;
+    type ParamSpecifier: HasParamStorage;
 
     fn update<Ctx>(&self, _ctx: &Ctx) -> Self
     where
         Ctx: Context<Self>;
 }
 
-pub trait GetOutput<Spec: crate::params::Key>: Component {
+pub trait GetOutput<Spec: Key>: Component {
     type Iter: ExactSizeIterator<Item = Spec::Value>;
 
     fn output<Ctx>(&self, ctx: &Ctx) -> Self::Iter

@@ -1,5 +1,6 @@
-use crate::{Component, Context, GetOutput, Value, UiElement};
+use crate::{Component, Context, DisplayParam, GetOutput, UiElement, Value};
 use fast_floats::FF64;
+use std::fmt;
 
 crate::specs! {
     pub mod params {
@@ -13,13 +14,33 @@ crate::specs! {
     }
 }
 
+impl DisplayParam for params::Freq {
+    type Display = impl fmt::Display;
+
+    fn display(val: Value) -> Self::Display {
+        struct FreqDisplay(Value);
+
+        impl fmt::Display for FreqDisplay {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(
+                    f,
+                    "{}Hz",
+                    ((volt_to_octave(self.0) * 100.) as u64) as f64 / 100.
+                )
+            }
+        }
+
+        FreqDisplay(val)
+    }
+}
+
 impl Default for params::Params {
     fn default() -> Self {
         params::Params { Freq: freq(440) }
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Synth {
     tick: f64,
 }

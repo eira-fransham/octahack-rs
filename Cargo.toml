@@ -8,15 +8,20 @@ edition = "2018"
 
 [dependencies]
 staticvec = "0.7"
+array_iterator = "0.2"
 az = "0.3"
 cpal = "0.8"
 crossbeam-channel = "0.3"
 derive_more = "0.99"
 fast-floats = "0.1"
 fixed = { version = "0.4", features = ["az"] }
-fxhash = "0.2"
 hlist = "0.1"
 itertools = "0.8"
 nom-midi = "0.5"
+rand = { version = "0.7", features = ["small_rng"] }
 rodio = "0.10"
 typenum = "1.11"
+
+[profile.release]
+codegen-units = 1
+lto = true

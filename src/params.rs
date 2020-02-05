@@ -1,19 +1,122 @@
-use crate::{context::Context, Component};
-use std::any::Any;
+use crate::{
+    context::Context,
+    rack::{marker, InternalWire, Wire},
+    AnyInputSpec, AnyOutputSpec, Component, RefRuntimeSpecifier, RuntimeSpecifier,
+};
+use std::{
+    any::Any,
+    fmt, iter,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
+
+pub trait DisplayParam: Key {
+    type Display: fmt::Display;
+
+    fn display(val: Self::Value) -> Self::Display;
+}
+
+pub trait DisplayParamValue: HasParamStorage {
+    type Display: fmt::Display;
+
+    fn display(&self, val: &dyn Any) -> Self::Display;
+}
 
 pub trait ParamStorage {
     type Specifier;
 
-    fn get(&self, spec: Self::Specifier) -> (&dyn Any, &dyn Any);
-    fn get_mut(&mut self, spec: Self::Specifier) -> (&mut dyn Any, &mut dyn Any);
+    fn get(&self, spec: &Self::Specifier) -> (&dyn Any, &dyn Any);
+    fn get_mut(&mut self, spec: &Self::Specifier) -> (&mut dyn Any, &mut dyn Any);
 }
 
 pub trait Storage {
     type Specifier;
     type Inner;
 
-    fn get(&self, spec: Self::Specifier) -> &Self::Inner;
-    fn get_mut(&mut self, spec: Self::Specifier) -> &mut Self::Inner;
+    fn get(&self, spec: &Self::Specifier) -> &Self::Inner;
+}
+
+impl<T> Storage for T
+where
+    T: Deref,
+    T::Target: Storage,
+{
+    type Specifier = <T::Target as Storage>::Specifier;
+    type Inner = <T::Target as Storage>::Inner;
+
+    fn get(&self, spec: &Self::Specifier) -> &Self::Inner {
+        <T::Target as Storage>::get(&**self, spec)
+    }
+}
+
+pub trait StorageMut: Storage {
+    fn get_mut(&mut self, spec: &Self::Specifier) -> &mut Self::Inner;
+}
+
+impl<T> StorageMut for T
+where
+    T: DerefMut,
+    T::Target: StorageMut,
+{
+    fn get_mut(&mut self, spec: &Self::Specifier) -> &mut Self::Inner {
+        <T::Target as StorageMut>::get_mut(&mut **self, spec)
+    }
+}
+
+pub enum EitherStorage<A, B> {
+    Left(A),
+    Right(B),
+}
+
+impl<A, B> Storage for EitherStorage<A, B>
+where
+    A: Storage,
+    B: Storage<Specifier = A::Specifier, Inner = A::Inner>,
+{
+    type Specifier = A::Specifier;
+    type Inner = A::Inner;
+
+    fn get(&self, spec: &Self::Specifier) -> &Self::Inner {
+        match self {
+            Self::Left(val) => val.get(spec),
+            Self::Right(val) => val.get(spec),
+        }
+    }
+}
+
+impl<A, B> ParamStorage for EitherStorage<A, B>
+where
+    A: ParamStorage,
+    B: ParamStorage<Specifier = A::Specifier>,
+{
+    type Specifier = A::Specifier;
+
+    fn get(&self, spec: &Self::Specifier) -> (&dyn Any, &dyn Any) {
+        match self {
+            Self::Left(val) => val.get(spec),
+            Self::Right(val) => val.get(spec),
+        }
+    }
+
+    fn get_mut(&mut self, spec: &Self::Specifier) -> (&mut dyn Any, &mut dyn Any) {
+        match self {
+            Self::Left(val) => val.get_mut(spec),
+            Self::Right(val) => val.get_mut(spec),
+        }
+    }
+}
+
+impl<A, B> StorageMut for EitherStorage<A, B>
+where
+    A: StorageMut,
+    B: StorageMut<Specifier = A::Specifier, Inner = A::Inner>,
+{
+    fn get_mut(&mut self, spec: &Self::Specifier) -> &mut Self::Inner {
+        match self {
+            Self::Left(val) => val.get_mut(spec),
+            Self::Right(val) => val.get_mut(spec),
+        }
+    }
 }
 
 pub type OutputIterForComponent<C> = <<C as Component>::OutputSpecifier as Output<C>>::Iter;
@@ -30,7 +133,72 @@ where
 }
 
 pub trait HasStorage<T>: Sized {
-    type Storage: Storage<Specifier = Self, Inner = T>;
+    type Storage: StorageMut<Specifier = Self, Inner = T>;
+}
+
+pub struct AnyStorage<S, T> {
+    inner: Vec<Option<T>>,
+    _marker: PhantomData<S>,
+}
+
+impl<S, T> Default for AnyStorage<S, T> {
+    fn default() -> Self {
+        AnyStorage {
+            inner: vec![],
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a, S: 'a, T: 'a> IntoIterator for &'a AnyStorage<S, T>
+where
+    S: RuntimeSpecifier,
+{
+    type Item = (S, &'a Option<T>);
+    type IntoIter = impl Iterator<Item = Self::Item> + Clone + 'a;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.is_some())
+            .map(|(i, x)| (S::from_id(i), x))
+    }
+}
+
+impl<S, T> Storage for AnyStorage<S, T>
+where
+    S: RefRuntimeSpecifier,
+{
+    type Specifier = S;
+    type Inner = Option<T>;
+
+    fn get(&self, spec: &Self::Specifier) -> &Self::Inner {
+        self.inner.get(spec.id()).unwrap_or(&None)
+    }
+}
+
+impl<S, T> StorageMut for AnyStorage<S, T>
+where
+    S: RefRuntimeSpecifier,
+{
+    fn get_mut(&mut self, spec: &Self::Specifier) -> &mut Self::Inner {
+        let diff = (1 + spec.id()).saturating_sub(self.inner.len());
+
+        if diff > 0 {
+            self.inner.extend(iter::repeat_with(|| None).take(diff));
+        }
+
+        &mut self.inner[spec.id()]
+    }
+}
+
+impl HasStorage<InternalWire> for AnyOutputSpec {
+    type Storage = AnyStorage<Self, Wire<marker::Output>>;
+}
+
+impl HasStorage<InternalWire> for AnyInputSpec {
+    type Storage = AnyStorage<Self, Wire<marker::Output>>;
 }
 
 pub trait HasParamStorage: Sized {
@@ -117,11 +285,15 @@ impl Param for crate::Value {
             }
 
             let wire_value = remap_0_1(value.to_u());
-            let average_output_this_tick: UCont = average_fixed(
-                crate::components::PossiblyIter::<crate::Value>::try_iter(amount)
-                    .unwrap_or_else(|_| unimplemented!())
-                    .map(|o| remap_0_1(o.to_u())),
-            );
+            let average_output_this_tick: UCont = amount
+                .map(|amount| {
+                    average_fixed(
+                        crate::components::PossiblyIter::<crate::Value>::try_iter(amount)
+                            .unwrap_or_else(|_| unimplemented!())
+                            .map(|o| remap_0_1(o.to_u())),
+                    )
+                })
+                .unwrap_or_default();
             let unat = remap_0_1(self.to_u());
 
             // Weighted average: wire value == max means out is `average_output_this_tick`,
@@ -165,11 +337,11 @@ pub struct EmptyParamStorage {
 impl ParamStorage for EmptyParamStorage {
     type Specifier = !;
 
-    fn get(&self, _: Self::Specifier) -> (&dyn Any, &dyn Any) {
+    fn get(&self, _: &Self::Specifier) -> (&dyn Any, &dyn Any) {
         unreachable!()
     }
 
-    fn get_mut(&mut self, _: Self::Specifier) -> (&mut dyn Any, &mut dyn Any) {
+    fn get_mut(&mut self, _: &Self::Specifier) -> (&mut dyn Any, &mut dyn Any) {
         unreachable!()
     }
 }
@@ -178,11 +350,13 @@ impl<V> Storage for EmptyStorage<V> {
     type Specifier = !;
     type Inner = V;
 
-    fn get(&self, _: Self::Specifier) -> &Self::Inner {
+    fn get(&self, _: &Self::Specifier) -> &Self::Inner {
         unreachable!()
     }
+}
 
-    fn get_mut(&mut self, _: Self::Specifier) -> &mut Self::Inner {
+impl<V> StorageMut for EmptyStorage<V> {
+    fn get_mut(&mut self, _: &Self::Specifier) -> &mut Self::Inner {
         unreachable!()
     }
 }
@@ -215,31 +389,69 @@ macro_rules! specs {
                     $( $key, )*
                 }
 
-                #[derive(Clone)]
-                pub enum ValueIter<$($key,)*> {
-                    $(
-                        $key($key),
-                    )*
-                }
-
-                impl<__Item, $($key,)*> $crate::components::PossiblyIter<__Item> for ValueIter<$($key,)*>
+                impl $crate::params::DisplayParamValue for Specifier
                 where
-                    $($key: $crate::components::PossiblyIter<__Item>,)*
+                    $( $key: $crate::params::DisplayParam, )*
                 {
-                    type Iter = ValueIter<$($key::Iter),*>;
+                    type Display = OneOf<
+                        $( <$key as $crate::params::DisplayParam>::Display, )*
+                    >;
 
-                    fn try_iter(self) -> Result<Self::Iter, Self> {
+                    fn display(&self, val: &dyn std::any::Any) -> Self::Display {
                         match self {
                             $(
-                                Self::$key(val) => val.try_iter()
-                                    .map(ValueIter::$key)
-                                    .map_err(ValueIter::$key),
+                                Specifier::$key => {
+                                    OneOf::$key(
+                                        <$key as $crate::params::DisplayParam>::display(
+                                            val.downcast_ref::<
+                                                <$key as $crate::params::Key>::Value
+                                            >().unwrap().clone()
+                                        )
+                                    )
+                                }
                             )*
                         }
                     }
                 }
 
-                impl<__Item, $($key,)*> Iterator for ValueIter<$($key,)*>
+                #[derive(Clone)]
+                pub enum OneOf<$($key,)*> {
+                    $(
+                        $key($key),
+                    )*
+                }
+
+                impl<$($key,)*> std::fmt::Display for OneOf<$($key,)*>
+                where
+                    $($key: std::fmt::Display,)*
+                {
+                    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        match self {
+                            $(
+                                Self::$key(val) => val.fmt(f),
+                            )*
+                        }
+                    }
+                }
+
+                impl<__Item, $($key,)*> $crate::components::PossiblyIter<__Item> for OneOf<$($key,)*>
+                where
+                    $($key: $crate::components::PossiblyIter<__Item>,)*
+                {
+                    type Iter = OneOf<$($key::Iter),*>;
+
+                    fn try_iter(self) -> Result<Self::Iter, Self> {
+                        match self {
+                            $(
+                                Self::$key(val) => val.try_iter()
+                                    .map(OneOf::$key)
+                                    .map_err(OneOf::$key),
+                            )*
+                        }
+                    }
+                }
+
+                impl<__Item, $($key,)*> Iterator for OneOf<$($key,)*>
                 where
                     $( $key: Iterator<Item = __Item>, )*
                 {
@@ -254,7 +466,7 @@ macro_rules! specs {
                     }
                 }
 
-                impl<__Item, $($key,)*> ExactSizeIterator for ValueIter<$($key,)*>
+                impl<__Item, $($key,)*> ExactSizeIterator for OneOf<$($key,)*>
                 where
                     $( $key: ExactSizeIterator<Item = __Item>, )*
                 {
@@ -282,7 +494,7 @@ macro_rules! specs {
                         >,
                     )*
                 {
-                    type Iter = ValueIter<$(
+                    type Iter = OneOf<$(
                         <$value as
                             $crate::components::ValueIterImplHelper<<C as $crate::GetOutput<$key>>::Iter>>::AnyIter,
                     )*>;
@@ -293,7 +505,7 @@ macro_rules! specs {
                     {
                         match self {
                             $(
-                                Self::$key => ValueIter::$key(
+                                Self::$key => OneOf::$key(
                                     <C as $crate::GetOutput<$key>>::output(comp, ctx).into()
                                 ),
                             )*
@@ -319,12 +531,7 @@ macro_rules! specs {
                     }
                 }
 
-                impl $crate::RuntimeSpecifier for Specifier {
-                    const VALUES: &'static [Self] = &[ $( Specifier::$key ),* ];
-                    const TYPES: &'static [$crate::ValueType] = &[
-                        $( (stringify!($key), $crate::ValueType::mono()).1 ),*
-                    ];
-
+                impl $crate::RefRuntimeSpecifier for Specifier {
                     #[allow(irrefutable_let_patterns, unused_assignments)]
                     fn id(&self) -> $crate::SpecId {
                         let mut i = 0;
@@ -336,6 +543,14 @@ macro_rules! specs {
                         unreachable!()
                     }
 
+                    fn value_type(&self) -> $crate::ValueType {
+                        [
+                            $( (stringify!($key), $crate::ValueType::mono()).1 ),*
+                        ][self.id()]
+                    }
+                }
+
+                impl $crate::RuntimeSpecifier for Specifier {
                     #[allow(irrefutable_let_patterns, unused_assignments)]
                     fn from_id(id: $crate::SpecId) -> Self {
                         let mut i = 0;
@@ -345,6 +560,14 @@ macro_rules! specs {
                         )*
 
                         unreachable!()
+                    }
+                }
+
+                impl $crate::components::EnumerateValues for Specifier {
+                    type Iter = std::iter::Copied<std::slice::Iter<'static, &'static Self>>;
+
+                    fn values() -> Self::Iter {
+                        [ $( &Specifier::$key ),* ].iter().copied()
                     }
                 }
 
@@ -363,19 +586,42 @@ macro_rules! specs {
                     )*
                 }
 
+                impl<'a, V: 'a> std::iter::IntoIterator for &'a Storage<V> {
+                    type Item = (Specifier, &'a V);
+                    type IntoIter = std::iter::Zip<
+                        std::iter::Copied<<Specifier as $crate::components::EnumerateValues>::Iter>,
+                        $crate::array_iterator::ArrayIterator<
+                            &'a V,
+                            [&'a V; $( (stringify!($key), 1).1 +)* 0]
+                        >,
+                    >;
+
+                    fn into_iter(self) -> Self::IntoIter {
+                        use $crate::{components::EnumerateValues, array_iterator::ArrayIterator};
+
+                        Specifier::values()
+                            .copied()
+                            .zip(
+                                ArrayIterator::new([$( &self.$key, )*])
+                            )
+                    }
+                }
+
                 impl<V> $crate::params::Storage for Storage<V> {
                     type Specifier = Specifier;
                     type Inner = V;
 
-                    fn get(&self, spec: Self::Specifier) -> &Self::Inner {
+                    fn get(&self, spec: &Self::Specifier) -> &Self::Inner {
                         match spec {
                             $(
                                 Specifier::$key => &self.$key,
                             )*
                         }
                     }
+                }
 
-                    fn get_mut(&mut self, spec: Self::Specifier) -> &mut Self::Inner {
+                impl<V> $crate::params::StorageMut for Storage<V> {
+                    fn get_mut(&mut self, spec: &Self::Specifier) -> &mut Self::Inner {
                         match spec {
                             $(
                                 Specifier::$key => &mut self.$key,
@@ -445,7 +691,7 @@ macro_rules! specs {
                 impl $crate::params::ParamStorage for ParamsWithExtra {
                     type Specifier = Specifier;
 
-                    fn get(&self, spec: Self::Specifier) -> (&dyn std::any::Any, &dyn std::any::Any) {
+                    fn get(&self, spec: &Self::Specifier) -> (&dyn std::any::Any, &dyn std::any::Any) {
                         match spec {
                             $(
                                 Specifier::$key => {
@@ -455,7 +701,7 @@ macro_rules! specs {
                         }
                     }
 
-                    fn get_mut(&mut self, spec: Self::Specifier) -> (&mut dyn std::any::Any, &mut dyn std::any::Any) {
+                    fn get_mut(&mut self, spec: &Self::Specifier) -> (&mut dyn std::any::Any, &mut dyn std::any::Any) {
                         match spec {
                             $(
                                 Specifier::$key => {

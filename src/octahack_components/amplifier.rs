@@ -1,24 +1,46 @@
-use crate::{Component, Context, GetOutput, UiElement, Value, ValueExt};
+use crate::{Component, Context, DisplayParam, GetOutput, UiElement, Value, ValueExt};
 use az::Az;
+use std::fmt;
 
 crate::specs! {
-    mod amplifier {
-        Only: crate::Value
+    pub mod params {
+        Amount: crate::Value
+    }
+
+    pub mod input {
+        Input: crate::Value
+    }
+
+    pub mod output {
+        Output: crate::Value
     }
 }
 
-use amplifier::Only;
-pub use amplifier::Specifier;
+impl DisplayParam for params::Amount {
+    type Display = impl fmt::Display;
 
-impl Default for amplifier::Params {
+    fn display(val: Value) -> Self::Display {
+        struct PercDisplay(Value);
+
+        impl fmt::Display for PercDisplay {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                (f64::from(self.0) * 100.0 + 100.0).fmt(f)
+            }
+        }
+
+        PercDisplay(val)
+    }
+}
+
+impl Default for params::Params {
     fn default() -> Self {
         Self {
-            Only: Default::default(),
+            Amount: Default::default(),
         }
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Amplifier;
 
 impl UiElement for Amplifier {
@@ -26,9 +48,9 @@ impl UiElement for Amplifier {
 }
 
 impl Component for Amplifier {
-    type InputSpecifier = Specifier;
-    type OutputSpecifier = Specifier;
-    type ParamSpecifier = Specifier;
+    type InputSpecifier = input::Specifier;
+    type OutputSpecifier = output::Specifier;
+    type ParamSpecifier = params::Specifier;
 
     fn update<Ctx>(&self, _: &Ctx) -> Self
     where
@@ -38,14 +60,14 @@ impl Component for Amplifier {
     }
 }
 
-impl GetOutput<amplifier::Only> for Amplifier {
+impl GetOutput<output::Output> for Amplifier {
     type Iter = impl ExactSizeIterator<Item = Value> + Send;
 
     fn output<Ctx>(&self, ctx: &Ctx) -> Self::Iter
     where
         Ctx: Context<Self>,
     {
-        let inputs = if let Some(inputs) = ctx.input::<Only>() {
+        let inputs = if let Some(inputs) = ctx.input::<input::Input>() {
             inputs
         } else {
             return Vec::<Value>::new().into_iter().into();
