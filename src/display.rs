@@ -27,7 +27,7 @@ where
 
 #[inline]
 fn print_spec<ISpec: RefRuntimeSpecifier + ?Sized>(i: &ISpec) -> impl fmt::Display + '_ {
-    FnDisplay(move |f| write!(f, "{}: {}", i, i.value_type()))
+    FnDisplay(move |f| write!(f, "{}", i))
 }
 
 struct DisplayFunc<'a, C, Def, I, O, N>
@@ -146,45 +146,40 @@ where
                         write!(f, ", {}", print_spec(o))?;
                     }
 
-                    write!(f, " }} = {} {{", component.name())?;
+                    write!(f, " }} = {}", component.name())?;
 
                     let (params, inputs) = (
                         component.param_names().enumerate(),
                         component.input_names().enumerate(),
                     );
 
-                    if params.len() + inputs.len() == 0 {
-                        writeln!(f, " }}")?;
-                    } else {
+                    if params.len() + inputs.len() > 0 {
+                        writeln!(f, " {{")?;
                         for (i, p) in params {
-                            writeln!(f)?;
                             write!(f, "        ${} = ", p)?;
 
                             let (value, param_wire) = meta.params.get(&AnyParamSpec(i));
 
-                            match param_wire.downcast_ref::<InternalParamWire>().unwrap() {
-                                Some(wire) => {
-                                    write!(
-                                        f,
-                                        "lerp({}, {}..{})",
-                                        print_wire(&wire.src),
-                                        component.display_param_value(AnyParamSpec(i), value),
-                                        component.display_param_value(AnyParamSpec(i), &wire.value),
-                                    )?;
-                                }
-                                None => {
-                                    write!(
-                                        f,
-                                        "{}",
-                                        component.display_param_value(AnyParamSpec(i), value)
-                                    )?;
-                                }
+                            write!(
+                                f,
+                                "{}",
+                                component.display_param_value(AnyParamSpec(i), value)
+                            )?;
+                            if let Some(wire) =
+                                param_wire.downcast_ref::<InternalParamWire>().unwrap()
+                            {
+                                write!(
+                                    f,
+                                    " + {} * {}",
+                                    print_wire(&wire.src),
+                                    &wire.cv.natural_value
+                                )?;
+                                assert!(wire.cv.wire.is_none());
                             }
 
-                            write!(f, ",")?;
+                            writeln!(f, ",")?;
                         }
 
-                        writeln!(f)?;
                         if inputs.len() > 0 {
                             writeln!(f)?;
                         }
@@ -208,20 +203,23 @@ where
                     for (o, _) in iter {
                         write!(f, ", {}", print_spec(&o))?;
                     }
-                    write!(f, " }} = {} {{", func_id)?;
+                    write!(f, " }} = {}", func_id)?;
 
                     let mut any = false;
 
                     for (name, wire) in inputs {
-                        writeln!(f)?;
-                        write!(f, "        {} = {}", name, print_opt_wire(wire))?;
+                        if !any {
+                            writeln!(f, " {{")?;
+                        }
+
+                        writeln!(f, "        {} = {}", name, print_opt_wire(wire))?;
                         any = true;
                     }
 
                     if any {
                         writeln!(f, "    }}")?;
                     } else {
-                        writeln!(f, " }}")?;
+                        writeln!(f)?;
                     }
                 }
             }

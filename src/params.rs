@@ -1,7 +1,8 @@
 use crate::{
+    components::PossiblyIter,
     context::Context,
-    rack::{marker, InternalWire, Wire},
-    AnyInputSpec, AnyOutputSpec, Component, RefRuntimeSpecifier, RuntimeSpecifier,
+    rack::{marker, InternalWire, ParamValue, ParamWire, Wire},
+    AnyInputSpec, AnyOutputSpec, Component, RefRuntimeSpecifier, RuntimeSpecifier, Value,
 };
 use std::{
     any::Any,
@@ -236,6 +237,30 @@ impl<Kind> Param for Option<crate::context::FileId<Kind>> {
     }
 }
 
+fn access_value<Ctx>(val: Value, wire: Option<&ParamWire>, ctx: &Ctx) -> Value
+where
+    Ctx: crate::components::anycomponent::AnyContext,
+{
+    if let Some(ParamWire { src, cv }) = wire {
+        let amount = ctx.read_wire(*src);
+
+        let average_output_this_tick: Value = amount
+            .map(|amount| {
+                let mut iter =
+                    PossiblyIter::<Value>::try_iter(amount).unwrap_or_else(|_| unimplemented!());
+                let len = iter.len();
+                iter.sum::<Value>() / len as f64
+            })
+            .unwrap_or_default();
+
+        let cv = access_value(cv.natural_value, cv.wire.as_ref().map(|w| &**w), ctx);
+
+        val + cv * average_output_this_tick
+    } else {
+        val
+    }
+}
+
 impl Param for crate::Value {
     type Extra = crate::rack::InternalParamWire;
 
@@ -243,69 +268,7 @@ impl Param for crate::Value {
     where
         Ctx: crate::components::anycomponent::AnyContext,
     {
-        use crate::{rack::ParamWire, ValueExt};
-        use fixed::types::{U0F32, U1F31};
-        use staticvec::StaticVec;
-
-        /// Improves precision (and possibly performance, too) by waiting as long as possible to do division.
-        /// If we overflow 36 (I believe?) bits total then it crashes, but I believe that it's OK to assume
-        /// that doesn't happen.
-        fn average_fixed<I>(iter: I) -> U0F32
-        where
-            I: ExactSizeIterator<Item = U0F32>,
-        {
-            let len = iter.len() as u32;
-
-            let mut cur = StaticVec::<U0F32, 4>::new();
-            let mut acc = U0F32::default();
-
-            for i in iter {
-                if let Some(new) = acc.checked_add(i) {
-                    acc = new;
-                } else {
-                    cur.push(acc);
-                    acc = i;
-                }
-            }
-
-            acc / len + cur.into_iter().map(|c| c / len).sum::<U0F32>()
-        }
-
-        type UCont = U0F32;
-
-        if let Some(ParamWire { src, value }) = wire {
-            let amount = ctx.read_wire(*src);
-
-            fn remap_0_1(val: U1F31) -> U0F32 {
-                U0F32::from_bits(val.to_bits())
-            }
-
-            fn remap_0_2(val: U0F32) -> U1F31 {
-                U1F31::from_bits(val.to_bits())
-            }
-
-            let wire_value = remap_0_1(value.to_u());
-            let average_output_this_tick: UCont = amount
-                .map(|amount| {
-                    average_fixed(
-                        crate::components::PossiblyIter::<crate::Value>::try_iter(amount)
-                            .unwrap_or_else(|_| unimplemented!())
-                            .map(|o| remap_0_1(o.to_u())),
-                    )
-                })
-                .unwrap_or_default();
-            let unat = remap_0_1(self.to_u());
-
-            // Weighted average: wire value == max means out is `average_output_this_tick`,
-            // wire value == min means out is `unat`, and values between those extremes lerp
-            // between the two.
-            Self::from_u(remap_0_2(
-                (unat * (UCont::max_value() - average_output_this_tick))
-                    + wire_value * average_output_this_tick,
-            ))
-        } else {
-            *self
-        }
+        access_value(*self, wire.as_ref(), ctx)
     }
 }
 
@@ -496,7 +459,10 @@ macro_rules! specs {
                 {
                     type Iter = OneOf<$(
                         <$value as
-                            $crate::components::ValueIterImplHelper<<C as $crate::GetOutput<$key>>::Iter>>::AnyIter,
+                            $crate::components::ValueIterImplHelper<
+                                <C as $crate::GetOutput<$key>>::Iter
+                            >
+                        >::AnyIter,
                     )*>;
 
                     fn get_output<Ctx>(self, comp: &C, ctx: &Ctx) -> Self::Iter
@@ -730,7 +696,7 @@ mod tests {
     impl Default for foo::Params {
         fn default() -> Self {
             Self {
-                A: Value::saturating_from_num(0),
+                A: 0.,
                 B: MidiValue::ChannelPressure(0),
             }
         }

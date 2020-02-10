@@ -4,10 +4,11 @@ use crate::{
         EnumerateValues, PossiblyEither, PossiblyIter,
     },
     context::{ContextMeta, GetFunctionParam},
-    params::{EitherStorage, HasStorage, ParamStorage, Storage, StorageMut},
+    params::{EitherStorage, HasStorage, Key, ParamStorage, Storage, StorageMut},
     AnyComponent, AnyInputSpec, AnyOutputSpec, AnyParamSpec, MidiValue, RefRuntimeSpecifier,
     RuntimeSpecifier, SpecId, Uid, UidGen, UidMap, Value, XOrHasher,
 };
+use itertools::Either;
 use std::{
     fmt,
     marker::PhantomData,
@@ -55,7 +56,7 @@ pub struct WireDst(WireDstInner);
 
 impl WireDst {
     #[inline]
-    pub fn rack_output<S: RuntimeSpecifier>(output: S) -> Self {
+    pub fn func_output<S: RuntimeSpecifier>(output: S) -> Self {
         WireDst(WireDstInner::Input(GenericWire {
             io_index: output.id(),
             element: ElementSpecifier::FuncInputs,
@@ -73,14 +74,9 @@ impl WireDst {
     }
 
     #[inline]
-    pub fn component_param<S: RuntimeSpecifier, V: Into<Value>>(
-        id: ComponentId,
-        param: S,
-        value: V,
-    ) -> Self {
-        let value = value.into();
+    pub fn component_param<S: RuntimeSpecifier>(id: ComponentId, param: S, val: Value) -> Self {
         WireDst(WireDstInner::Param(
-            value,
+            val,
             GenericWire {
                 io_index: param.id(),
                 element: ElementSpecifier::Component { id },
@@ -92,7 +88,7 @@ impl WireDst {
 
 impl WireSrc {
     #[inline]
-    pub fn rack_input<S: RuntimeSpecifier>(input: S) -> Self {
+    pub fn func_input<S: RuntimeSpecifier>(input: S) -> Self {
         Wire(GenericWire {
             io_index: input.id(),
             element: ElementSpecifier::FuncInputs,
@@ -142,16 +138,28 @@ impl<Id> GenericWire<marker::Output, Id> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParamWire {
+pub struct ParamWire<V = Value> {
     pub src: WireSrc,
-    pub value: Value,
+    pub cv: ParamValue<V, Box<ParamWire<V>>>,
 }
 
 // TODO: Scenes
 #[derive(Debug, Clone, PartialEq)]
-struct ParamValue {
-    natural_value: Value,
-    wire: Option<ParamWire>,
+pub struct ParamValue<V = Value, P = ParamWire<V>> {
+    pub natural_value: V,
+    pub wire: Option<P>,
+}
+
+impl<V, P> Default for ParamValue<V, P>
+where
+    V: Default,
+{
+    fn default() -> Self {
+        Self {
+            natural_value: Default::default(),
+            wire: None,
+        }
+    }
 }
 
 pub struct ComponentMeta<C>
@@ -971,20 +979,44 @@ where
     }
 }
 
-impl<C, InputSpec, OutputSpec, Def, M>
-    FuncInstanceGen<
-        &'_ mut UidGen,
-        DefsAndFunc<M, Def>,
-        &'_ mut UidMap<Meta<C>>,
-        MapWithPathMut<'_, C>,
-    >
+// To get around the fact that `Either::as_mut` resolves to the innate method which
+// does something totally different.
+pub trait Settable<V> {
+    fn set(&mut self, val: V);
+}
+
+impl<T, V> Settable<V> for T
 where
-    InputSpec: RuntimeSpecifier,
-    OutputSpec: RuntimeSpecifier + HasStorage<InternalWire>,
-    C: AnyComponent,
-    M: Deref<Target = Funcs>,
-    Def: DefsAndFuncHelper<FuncDef = FuncDef<InputSpec, OutputSpec>> + Clone,
+    T: AsMut<V>,
 {
+    fn set(&mut self, val: V) {
+        *self.as_mut() = val;
+    }
+}
+
+pub trait AsParam<V>: AsMut<V> {
+    type Param: Param<V>;
+
+    fn as_param(self) -> Option<Self::Param>;
+}
+
+impl<A, B, V> AsParam<V> for Either<A, B>
+where
+    A: AsMut<V>,
+    B: Param<V>,
+{
+    type Param = B;
+
+    fn as_param(self) -> Option<Self::Param> {
+        self.right()
+    }
+}
+
+pub trait Param<V>: AsMut<V> {
+    type CV: Param<V>;
+
+    fn wire(&mut self, src: WireSrc, value: V);
+    fn cv(self) -> Option<Self::CV>;
 }
 
 impl<C, InputSpec, OutputSpec, Def> FuncInstanceMut<'_, C, Def>
@@ -1009,7 +1041,7 @@ where
                     .out_wires
                     .set(&OutputSpec::from_id(dst.input_id().0), Some(src)),
             },
-            WireDstInner::Param(val, dst) => match dst.element() {
+            WireDstInner::Param(natural_value, dst) => match dst.element() {
                 ElementSpecifier::Component { id } => {
                     // TODO: Allow functions to have parameters
                     *self.meta_storage[&id.0]
@@ -1019,7 +1051,13 @@ where
                         .get_mut(&dst.param_id())
                         .1
                         .downcast_mut::<InternalParamWire>()
-                        .unwrap() = Some(ParamWire { value: val, src })
+                        .unwrap() = Some(ParamWire {
+                        cv: ParamValue {
+                            natural_value,
+                            wire: None,
+                        },
+                        src,
+                    })
                 }
                 ElementSpecifier::FuncInputs => unimplemented!(),
             },
@@ -1043,19 +1081,83 @@ where
     }
 
     #[inline]
-    pub fn set_param<S: RuntimeSpecifier, V: 'static>(
+    pub fn set_param<S: RuntimeSpecifier, V>(&mut self, component: ComponentId, param: S, value: V)
+    where
+        V: 'static,
+    {
+        self.param::<S, V>(component, param).set(value);
+    }
+
+    #[inline]
+    pub fn param<S: RuntimeSpecifier, V>(
         &mut self,
         component: ComponentId,
         param: S,
-        value: V,
-    ) {
-        let (v, _) = self.meta_storage[&component.0]
+    ) -> impl AsParam<V> + '_
+    where
+        V: 'static,
+    {
+        use std::borrow::BorrowMut;
+
+        struct BorrowParam<'a, V, P> {
+            value: &'a mut V,
+            wire: &'a mut Option<P>,
+        }
+
+        struct AsMutWrapper<'a, T>(&'a mut T);
+
+        impl<T> AsMut<T> for AsMutWrapper<'_, T> {
+            fn as_mut(&mut self) -> &mut T {
+                self.0
+            }
+        }
+
+        impl<'a, V, P> AsMut<V> for BorrowParam<'a, V, P> {
+            fn as_mut(&mut self) -> &mut V {
+                self.value
+            }
+        }
+
+        impl<'a, V, P> Param<V> for BorrowParam<'a, V, P>
+        where
+            P: BorrowMut<ParamWire<V>> + From<ParamWire<V>>,
+        {
+            type CV = BorrowParam<'a, V, Box<ParamWire<V>>>;
+
+            fn wire(&mut self, src: WireSrc, cv: V) {
+                *self.wire = Some(
+                    ParamWire {
+                        src,
+                        cv: ParamValue {
+                            natural_value: cv,
+                            wire: None,
+                        },
+                    }
+                    .into(),
+                );
+            }
+
+            fn cv(mut self) -> Option<Self::CV> {
+                self.wire
+                    .as_mut()
+                    .map(|w| w.borrow_mut())
+                    .map(|ParamWire { cv, .. }| BorrowParam {
+                        value: &mut cv.natural_value,
+                        wire: &mut cv.wire,
+                    })
+            }
+        }
+
+        let (v, wire) = self.meta_storage[&component.0]
             .component_mut()
             .unwrap()
             .params
             .get_mut(&AnyParamSpec(param.id()));
-        let val = v.downcast_mut::<V>().expect("Incorrect param type");
-        *val = value;
+        let value = v.downcast_mut::<V>().expect("Incorrect param type");
+        match wire.downcast_mut::<Option<ParamWire<V>>>() {
+            None => Either::Left(AsMutWrapper(value)),
+            Some(wire) => Either::Right(BorrowParam { value, wire }),
+        }
     }
 
     #[inline]

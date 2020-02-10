@@ -272,24 +272,4 @@ impl ValueType {
     }
 }
 
-pub type Value = I1F31;
-
-pub trait ValueExt {
-    fn discrete(self, max: u8) -> u8;
-    fn to_u(self) -> U1F31;
-    fn from_u(other: U1F31) -> Self;
-}
-
-impl ValueExt for Value {
-    fn discrete(self, max: u8) -> u8 {
-        (f64::from(self) * max as f64) as u8
-    }
-
-    fn to_u(self) -> U1F31 {
-        s_to_u(self)
-    }
-
-    fn from_u(other: U1F31) -> Self {
-        u_to_s(other)
-    }
-}
+pub type Value = f64;

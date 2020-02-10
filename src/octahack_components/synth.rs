@@ -1,5 +1,4 @@
 use crate::{Component, Context, DisplayParam, GetOutput, UiElement, Value};
-use fast_floats::FF64;
 use std::fmt;
 
 crate::specs! {
@@ -55,21 +54,16 @@ impl Synth {
     }
 }
 
-fn f(f: f64) -> FF64 {
-    FF64::from(f)
+fn volt_to_octave(volts: impl Into<Value>) -> f64 {
+    440. * volts.into().exp2()
 }
 
-fn volt_to_octave(volts: Value) -> f64 {
-    (f(440.0f64) * f((f(f64::from(volts)) / f(f64::from(super::VOLT))).0.exp2())).0
-}
-
-// 440 * (2 ^ 10x) = freq
-// log2(freq / 440) / 10. = x
+// 440 * (2 ^ x) = freq
+// log2(freq / 440) = x
 
 // This converts a frequency in Hz to a number of virtual "volts"
-pub fn freq(freq: impl Into<f64>) -> Value {
-    let freq = freq.into();
-    Value::saturating_from_num((f((f(freq) / f(440.)).0.log2()) * f(f64::from(super::VOLT))).0)
+pub fn freq(freq: impl Into<Value>) -> Value {
+    (freq.into() / 440.).log2()
 }
 
 impl Component for Synth {
@@ -84,7 +78,7 @@ impl Component for Synth {
         let freq = volt_to_octave(ctx.param::<params::Freq>());
 
         Synth {
-            tick: ((f(self.tick) + f(freq) / f(ctx.sample_rate() as f64)) % f(1.)).0,
+            tick: ((self.tick + freq / ctx.sample_rate() as f64) % 1.),
         }
     }
 }
@@ -98,9 +92,7 @@ impl GetOutput<output::Sine> for Synth {
     {
         use std::{f64, iter};
 
-        iter::once(Value::saturating_from_num(
-            (f(2.) * f(f64::consts::PI) * self.tick).0.sin(),
-        ))
+        iter::once((2. * f64::consts::PI * self.tick).sin())
     }
 }
 
@@ -113,7 +105,7 @@ impl GetOutput<output::Saw> for Synth {
     {
         use std::iter;
 
-        iter::once(Value::saturating_from_num((f(1.) - f(2.) * self.tick).0))
+        iter::once(1. - 2. * self.tick)
     }
 }
 
@@ -126,30 +118,26 @@ impl GetOutput<output::Square> for Synth {
     {
         use std::iter;
 
-        iter::once(Value::saturating_from_num(if self.tick < 0.5 {
-            1.
-        } else {
-            -1.
-        }))
+        iter::once(if self.tick < 0.5 { 1. } else { -1. })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{super::VOLT, f, volt_to_octave, Value};
+    use super::{volt_to_octave, Value};
 
     #[test]
     fn test_volt_to_freq() {
-        assert_eq!(volt_to_octave(Value::from_num(0.0)) as u32, 440);
-        assert_eq!(volt_to_octave(VOLT) as u32, 880);
-        assert_eq!(volt_to_octave(VOLT * 2) as u32, 1760);
+        assert_eq!(volt_to_octave(0) as u32, 440);
+        assert_eq!(volt_to_octave(1) as u32, 880);
+        assert_eq!(volt_to_octave(2) as u32, 1760);
 
         let points = 1000;
         for i in 1..points {
-            let actual_freq = f(i as f64) / f(points as f64);
+            let actual_freq = i as f64 / points as f64;
             assert_eq!(
-                (volt_to_octave(super::freq(actual_freq.0)) * 1000.).round() as u32,
-                (actual_freq * f(1000.)).0.round() as u32
+                (volt_to_octave(super::freq(actual_freq)) * 1000.).round() as u32,
+                (actual_freq * 1000.).round() as u32
             );
         }
 

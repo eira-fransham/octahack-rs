@@ -1,4 +1,4 @@
-use crate::{Component, Context, DisplayParam, GetOutput, UiElement, Value, ValueExt};
+use crate::{Component, Context, DisplayParam, GetOutput, UiElement, Value};
 use az::Az;
 use std::fmt;
 
@@ -24,7 +24,11 @@ impl DisplayParam for params::Amount {
 
         impl fmt::Display for PercDisplay {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                (f64::from(self.0) * 100.0 + 100.0).fmt(f)
+                write!(
+                    f,
+                    "{}%",
+                    ((f64::from(self.0) * 100.0 + 100.0).round() as i32)
+                )
             }
         }
 
@@ -73,10 +77,9 @@ impl GetOutput<output::Output> for Amplifier {
             return Vec::<Value>::new().into_iter().into();
         };
 
+        let amount = ctx.param();
         inputs
-            .map(|to_multiply| {
-                Value::saturating_from_num(to_multiply.az::<f32>() * ctx.param().to_u().az::<f32>())
-            })
+            .map(|to_multiply| to_multiply * amount)
             .collect::<Vec<_>>()
             .into_iter()
     }

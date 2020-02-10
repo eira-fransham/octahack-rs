@@ -1,4 +1,4 @@
-use crate::{context::ContextMetaExt, Component, Context, GetOutput, Value, ValueExt};
+use crate::{context::ContextMetaExt, Component, Context, GetOutput, Value};
 use az::Az;
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ impl Default for params::Params {
     fn default() -> Self {
         Self {
             File: None,
-            Speed: Value::saturating_from_num(1),
+            Speed: 1.,
         }
     }
 }

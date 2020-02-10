@@ -5,6 +5,7 @@ use octahack::{
         synth::{freq, output::Specifier as Out, params::Specifier as Params, Synth},
         OctahackComponent,
     },
+    rack::{AsParam, Param, Settable},
     Rack, Value, WireDst, WireSrc,
 };
 
@@ -27,26 +28,30 @@ fn main() {
 
     let mut main = rack.main_mut();
 
-    let modulator_modulator = main.push_component(Synth::new());
+    let cv_modulator = main.push_component(Synth::new());
+    main.set_param(cv_modulator, Params::Freq, freq(0.2));
     let modulator = main.push_component(Synth::new());
     let carrier = main.push_component(Synth::new());
     main.wire(
-        WireSrc::component_output(modulator_modulator, Out::Saw),
-        WireDst::component_param(modulator, Params::Freq, freq(55)),
+        WireSrc::component_output(carrier, Out::Sine),
+        WireDst::func_output(any::Specifier::OneChannel),
     );
-    main.wire(
-        WireSrc::component_output(modulator, Out::Sine),
-        WireDst::component_param(carrier, Params::Freq, freq(880 * 2)),
-    );
-    main.wire(
-        WireSrc::component_output(carrier, Out::Square),
-        WireDst::rack_output(any::Specifier::OneChannel),
-    );
-    main.set_param::<_, Value>(modulator_modulator, Params::Freq, freq(0.5));
-    main.set_param::<_, Value>(modulator, Params::Freq, freq(220));
-    main.set_param::<_, Value>(carrier, Params::Freq, freq(440));
+    main.set_param(modulator, Params::Freq, freq(440));
 
-    println!("{}", rack);
+    {
+        let mut carrier_freq = main
+            .param::<_, Value>(carrier, Params::Freq)
+            .as_param()
+            .unwrap();
+        carrier_freq.set(freq(220.));
+        carrier_freq.wire(WireSrc::component_output(modulator, Out::Sine), 1.);
+        carrier_freq
+            .cv()
+            .unwrap()
+            .wire(WireSrc::component_output(cv_modulator, Out::Sine), 4.);
+    }
+
+    // println!("{}", rack);
 
     let streamer =
         octahack::output::AudioStreamer::new_convert(None, rack, rodio::source::SineWave::new(440))

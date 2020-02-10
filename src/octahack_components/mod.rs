@@ -17,12 +17,9 @@ crate::component_set! {
 
 pub use self::octahack_component::Component as OctahackComponent;
 
-/// Equals `0.02` for `fixed::I1F31`
-pub const VOLT: Value = Value::from_bits(0x02_8f_5c_29);
-
 #[cfg(test)]
 mod test {
-    use crate::{AnyComponent, Rack, RuntimeSpecifier, Value, WireDst, WireSrc};
+    use crate::{Rack, Value, WireDst, WireSrc};
 
     crate::specs! {
         mod any {
@@ -48,18 +45,14 @@ mod test {
 
         let amp = func.push_component(super::Amplifier);
         func.wire(
-            WireSrc::rack_input(Specifier::OneChannel),
+            WireSrc::func_input(Specifier::OneChannel),
             WireDst::component_input(amp, super::amplifier::input::Specifier::Input),
         );
         func.wire(
             WireSrc::component_output(amp, super::amplifier::output::Specifier::Output),
             WireDst::component_input(amp, super::amplifier::input::Specifier::Input),
         );
-        func.set_param(
-            amp,
-            super::amplifier::params::Specifier::Amount,
-            Value::max_value(),
-        );
+        func.set_param(amp, super::amplifier::params::Specifier::Amount, 1.);
 
         println!("{}", rack);
 

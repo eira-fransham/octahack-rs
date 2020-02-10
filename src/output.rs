@@ -195,8 +195,8 @@ where
                         .unwrap()
                         .get()) as usize]
                 .iter()
-                .map(|&val| Value::from_num(I1F15::from_bits(val)))
-                .collect::<Vec<_>>()
+                .map(|&val| I1F15::from_bits(val).into())
+                .collect::<Vec<Value>>()
                 .into_iter()
                 .into(),
         )
@@ -269,7 +269,7 @@ where
                         .map(|iter| {
                             PossiblyIter::<Value>::try_iter(iter)
                                 .unwrap_or_else(|_| unimplemented!())
-                                .map(|val| I1F15::from_num(val).to_bits())
+                                .map(|val| I1F15::saturating_from_num(val).to_bits())
                         }),
                     min_len: OutputSpec::from_id(new_id)
                         .value_type()
